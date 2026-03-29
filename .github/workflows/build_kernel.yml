@@ -48,7 +48,7 @@ jobs:
           
       - name: Cloning Kernel Source
         run: |
-          git clone --single-branch --depth=1 --no-tags ${{ github.event.inputs.KERNEL_SOURCE }} -b ${{ github.event.inputs.KERNEL_BRANCH }} ${{ github.workspace }}/kernel
+          git clone --single-branch --depth=1 --no-tags https://$(printf %s "${{ secrets.KERNEL_USERNAME }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))'):$(printf %s "${{ secrets.KERNEL_TOKEN }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))')@$(echo "${{ github.event.inputs.KERNEL_SOURCE }}" | sed 's~https://~~') -b ${{ github.event.inputs.KERNEL_BRANCH }} ${{ github.workspace }}/kernel
           
       - name: Set-up Toolchain
         run: |
