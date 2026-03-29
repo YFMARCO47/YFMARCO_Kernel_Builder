@@ -18,7 +18,7 @@ on:
       CONFIG_FILE:
         description: 'Config file (You can put multiple configs separated by space)'
         required: true
-        default: 'apollo_defconfig vendor/debugfs.config'
+        default: 'vendor/bengal-perf_defconfig vendor/samsung/gta4l.config'
       TOOLCHAIN_URL:
         description: "Clone URL of your toolchain"
         required: true
