@@ -30,7 +30,7 @@ on:
 
 jobs:
   Build:
-    name: Build Kernel by ${{ github.actor }}
+    name: ${{ github.event.inputs.KERNEL_NAME }} by ${{ github.actor }}
     runs-on: ubuntu-22.04
     permissions: write-all
     defaults:
