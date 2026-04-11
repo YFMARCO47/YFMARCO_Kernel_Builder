@@ -127,7 +127,16 @@ jobs:
 
          make_defconfig() {
             start=$(date +"%s")
-            make -s ARCH=arm64 O=${{ env.OBJDIR }} ${{ github.event.inputs.CONFIG_FILE }} -j$(nproc --all)
+            base_defconfig=$(echo "${{ github.event.inputs.CONFIG_FILE }}" | awk '{print $1}')
+            fragments=$(echo "${{ github.event.inputs.CONFIG_FILE }}" | cut -d' ' -f2-)
+
+            make -s ARCH=arm64 O=${{ env.OBJDIR }} "${base_defconfig}" -j$(nproc --all)
+
+            if [[ -n "$fragments" ]]; then
+               ./scripts/kconfig/merge_config.sh -m -O "${{ env.OBJDIR }}" \
+                  "${{ env.OBJDIR }}/.config" $fragments
+               make -s ARCH=arm64 O=${{ env.OBJDIR }} olddefconfig -j$(nproc --all)
+            fi
          }
 
          compile() {
