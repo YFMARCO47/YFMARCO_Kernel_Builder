@@ -263,6 +263,7 @@ jobs:
            module_dir="${modules_root}/${module_path}"
            build_external_module "${module_path}" \
              AUDIO_ROOT="${module_dir}" \
+             BT_ROOT="${module_dir}" \
              KP_MODULE_ROOT="${module_dir}" \
              DISPLAY_ROOT="${module_dir}" \
              MMRM_ROOT="${module_dir}" \
