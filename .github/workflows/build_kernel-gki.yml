@@ -139,6 +139,7 @@ jobs:
             O=${{ env.OBJDIR }} \
             ARCH=arm64 \
             CC=clang \
+            KCFLAGS="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types" \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
