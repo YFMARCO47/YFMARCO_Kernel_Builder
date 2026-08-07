@@ -19,6 +19,10 @@ on:
         description: ' modules branch'
         required: true
         default: 'lineage-23.2'
+      MODULES_BUILD_PATHS:
+        description: 'Space-separated external-module paths relative to MODULES_SOURCE, or auto to discover Kbuild roots'
+        required: false
+        default: 'auto'
       DEVICETREES_SOURCE:
         description: 'devicetrees source URL'
         required: true
@@ -27,6 +31,10 @@ on:
         description: 'devicetrees branch'
         required: true
         default: 'lineage-23.2'
+      DTB_TYPES:
+        description: 'Optional DTB install prefix (for example parrot-overlays-); leave empty to use dtb-y'
+        required: false
+        default: ''
       KERNEL_NAME:
         description: 'Kernel/zip name'
         required: true
@@ -74,6 +82,36 @@ jobs:
           git clone --single-branch --depth=1 --no-tags https://$(printf %s "${{ secrets.KERNEL_USERNAME }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))'):$(printf %s "${{ secrets.KERNEL_TOKEN }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))')@$(echo "${{ github.event.inputs.DEVICETREES_SOURCE }}" | sed 's~https://~~') -b "${{ github.event.inputs.DEVICETREES_BRANCH }}" "${{ github.workspace }}/devicetrees"
           cd ${{ github.workspace }}/kernel
           git submodule update --init --recursive
+
+      - name: Link device trees and external modules
+        run: |
+          set -euo pipefail
+
+          # Different Qualcomm kernels use different sibling names (for example
+          # sm6475-modules or sm8750-modules). Discover the name(s) requested by
+          # this kernel and link the selected MODULES_SOURCE under each one.
+          mapfile -t module_link_names < <(
+            sed -nE 's|^[[:space:]]*ext-mod-dir[[:space:]]*:=[[:space:]]*\.\./([^/[:space:]]+-modules)[[:space:]]*$|\1|p' "${{ github.workspace }}/kernel/Makefile" | sort -u
+          )
+          for module_link_name in "${module_link_names[@]}"; do
+            module_link="${{ github.workspace }}/${module_link_name}"
+            if [[ -e "${module_link}" && ! -L "${module_link}" ]]; then
+              echo "ERROR: ${module_link} already exists and is not a symbolic link"
+              exit 1
+            fi
+            ln -sfn "${{ github.workspace }}/modules" "${module_link}"
+          done
+
+          # arch/arm64/boot/dts/Makefile switches to the vendor tree when this
+          # directory exists. The devicetrees repository already has the expected
+          # qcom/ and samsung/ layout, so it must be linked as vendor, not copied
+          # into the upstream qcom directory.
+          vendor_dts="${{ github.workspace }}/kernel/arch/arm64/boot/dts/vendor"
+          if [[ -e "${vendor_dts}" && ! -L "${vendor_dts}" ]]; then
+            echo "ERROR: ${vendor_dts} already exists and is not a symbolic link"
+            exit 1
+          fi
+          ln -sfn "${{ github.workspace }}/devicetrees" "${vendor_dts}"
           
       - name: Set-up Toolchain
         run: |
@@ -94,6 +132,7 @@ jobs:
           echo "KERNEL_NAME=${{ github.event.inputs.KERNEL_NAME }}" >> $GITHUB_ENV
           echo "ZIP_NAME=${{ github.event.inputs.KERNEL_NAME }}_${{ github.event.inputs.DEVICE_CODENAME }}_$(date +"%d%m%Y").zip" >> $GITHUB_ENV
           echo "OUTPUT_DIR=${{ github.workspace }}/compiled" >> $GITHUB_ENV
+          echo "DTB_STAGING=${{ github.workspace }}/dtb_staging" >> $GITHUB_ENV
           cd ${{ github.workspace }}/kernel && echo "COMMIT_ID=$(git rev-parse HEAD)" >> $GITHUB_ENV
 
           KERNEL_SOURCE_URL="${{ github.event.inputs.KERNEL_SOURCE }}"
@@ -104,6 +143,7 @@ jobs:
          
       - name: Start Compilation
         run: |
+         set -euo pipefail
          mkdir -p ${{ env.OUTPUT_DIR }}
          cd ${{ github.workspace }}/kernel
          
@@ -149,11 +189,124 @@ jobs:
             LD=ld.lld \
             NM=llvm-nm \
             LLVM=1 \
-            LLVM_IAS=1
+            LLVM_IAS=1 \
+            modules dtbs
+         }
+
+         build_external_module() {
+            local module_path="$1"
+            shift
+            local module_dir="${{ github.workspace }}/modules/${module_path}"
+
+            if [[ ! -f "${module_dir}/Kbuild" ]]; then
+              echo "ERROR: External module has no Kbuild file: ${module_dir}"
+              exit 1
+            fi
+
+            echo "Building external module: ${module_path}"
+            make -j$(nproc --all) \
+              O=${{ env.OBJDIR }} \
+              ARCH=arm64 \
+              CC=clang \
+              KCFLAGS="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types" \
+              CROSS_COMPILE=aarch64-linux-gnu- \
+              CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+              CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+              AR=llvm-ar \
+              LLVM_NM=llvm-nm \
+              OBJCOPY=llvm-objcopy \
+              LD=ld.lld \
+              NM=llvm-nm \
+              LLVM=1 \
+              LLVM_IAS=1 \
+              M="${module_dir}" modules "$@"
          }
 
          make_defconfig
          compile
+
+         modules_root="${{ github.workspace }}/modules"
+         module_paths=()
+         if [[ "${{ github.event.inputs.MODULES_BUILD_PATHS }}" == "auto" ]]; then
+           # A module root has Kbuild but no parent Kbuild inside MODULES_SOURCE.
+           # This works across Qualcomm module repositories without assuming a
+           # chipset, device codename, or fixed qcom/opensource layout.
+           while IFS= read -r kbuild_file; do
+             module_dir="$(dirname "${kbuild_file}")"
+             parent_dir="$(dirname "${module_dir}")"
+             nested_module=false
+             while [[ "${parent_dir}" != "${modules_root}" ]]; do
+               if [[ -f "${parent_dir}/Kbuild" ]]; then
+                 nested_module=true
+                 break
+               fi
+               parent_dir="$(dirname "${parent_dir}")"
+             done
+             if [[ "${nested_module}" == false ]]; then
+               module_paths+=("${module_dir#"${modules_root}/"}")
+             fi
+           done < <(find "${modules_root}" -type f -name Kbuild -print | sort)
+         else
+           read -r -a module_paths <<< "${{ github.event.inputs.MODULES_BUILD_PATHS }}"
+         fi
+
+         if [[ ${#module_paths[@]} -eq 0 ]]; then
+           echo "ERROR: No external module roots found. Set MODULES_BUILD_PATHS explicitly."
+           exit 1
+         fi
+
+         printf 'External module build paths:\n%s\n' "${module_paths[@]}"
+         for module_path in "${module_paths[@]}"; do
+           # Common Qualcomm module roots are passed for repositories whose
+           # Kbuild files use them; unrelated modules safely ignore them.
+           module_dir="${modules_root}/${module_path}"
+           build_external_module "${module_path}" \
+             AUDIO_ROOT="${module_dir}" \
+             KP_MODULE_ROOT="${module_dir}" \
+             DISPLAY_ROOT="${module_dir}" \
+             MMRM_ROOT="${module_dir}" \
+             SSG_MODULE_ROOT="${module_dir}" \
+             VIDEO_ROOT="${module_dir}" \
+             NFC_ROOT="${module_dir}"
+         done
+
+         rm -rf "${{ env.DTB_STAGING }}"
+         dtb_type_args=()
+         if [[ -n "${{ github.event.inputs.DTB_TYPES }}" ]]; then
+           dtb_type_args=("DTB_TYPES=${{ github.event.inputs.DTB_TYPES }}")
+         fi
+         make -j$(nproc --all) \
+           O=${{ env.OBJDIR }} \
+           ARCH=arm64 \
+           CC=clang \
+           CROSS_COMPILE=aarch64-linux-gnu- \
+           CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+           CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+           LLVM=1 \
+           LLVM_IAS=1 \
+           INSTALL_DTBS_PATH="${{ env.DTB_STAGING }}" \
+           "${dtb_type_args[@]}" \
+           dtbs_install
+
+         if ! find "${{ env.DTB_STAGING }}" -type f \( -name '*.dtb' -o -name '*.dtbo' \) -print -quit | grep -q .; then
+           echo "ERROR: No DTB/DTBO files were installed"
+           exit 1
+         fi
+
+         (
+           cd "${{ env.DTB_STAGING }}"
+           zip -qr "${{ env.OUTPUT_DIR }}/dtbs-${{ github.event.inputs.DEVICE_CODENAME }}.zip" .
+         )
+
+         if find "${modules_root}" -type f -name '*.ko' -print -quit | grep -q .; then
+           (
+             cd "${modules_root}"
+             find . -type f -name '*.ko' -print | zip -q "${{ env.OUTPUT_DIR }}/modules-${{ github.event.inputs.DEVICE_CODENAME }}.zip" -@
+           )
+         else
+           echo "ERROR: No external kernel modules were built"
+           exit 1
+         fi
 
          end=$(date +"%s")
          diff=$((end - start))
