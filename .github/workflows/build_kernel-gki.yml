@@ -190,6 +190,7 @@ jobs:
             NM=llvm-nm \
             LLVM=1 \
             LLVM_IAS=1 \
+            KBUILD_DTC_INCLUDE="${{ github.workspace }}/devicetrees" \
             modules dtbs
          }
 
@@ -284,6 +285,7 @@ jobs:
            CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
            LLVM=1 \
            LLVM_IAS=1 \
+           KBUILD_DTC_INCLUDE="${{ github.workspace }}/devicetrees" \
            INSTALL_DTBS_PATH="${{ env.DTB_STAGING }}" \
            "${dtb_type_args[@]}" \
            dtbs_install
