@@ -148,6 +148,22 @@ jobs:
          cd ${{ github.workspace }}/kernel
          
          export PATH="${{ env.CLANG_DIR }}/bin:$PATH"
+
+         # Keep external modules on the same include contract as the in-tree
+         # build.  Kernel headers (including include/linux/dmapool.h) are
+         # supplied by Kbuild.  IPA additionally consumes the public RMNET
+         # memory header from the sibling datarmnet module repository.
+         rmnet_mem_header="$(find "${{ github.workspace }}/modules" -type f -path '*/datarmnet-ext/mem/rmnet_mem.h' -print -quit)"
+         if [[ -z "${rmnet_mem_header}" ]]; then
+           echo "ERROR: datarmnet RMNET memory header was not found"
+           exit 1
+         fi
+         if [[ ! -f "${{ github.workspace }}/kernel/include/linux/dmapool.h" ]]; then
+           echo "ERROR: kernel DMA pool header was not found"
+           exit 1
+         fi
+         module_header_cflags="-I$(dirname "${rmnet_mem_header}")"
+         common_kcflags="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types"
          
          make_defconfig() {
             start=$(date +"%s")
@@ -179,7 +195,7 @@ jobs:
             O=${{ env.OBJDIR }} \
             ARCH=arm64 \
             CC=clang \
-            KCFLAGS="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types" \
+            KCFLAGS="${common_kcflags}" \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
@@ -209,7 +225,7 @@ jobs:
               O=${{ env.OBJDIR }} \
               ARCH=arm64 \
               CC=clang \
-              KCFLAGS="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types" \
+              KCFLAGS="${common_kcflags} ${module_header_cflags}" \
               CROSS_COMPILE=aarch64-linux-gnu- \
               CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
               CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
@@ -256,12 +272,33 @@ jobs:
            exit 1
          fi
 
+         # IPA imports symbols exported by rmnet_mem.  Build its provider
+         # first and give IPA the resulting symbol version file; this avoids
+         # both missing-header and unresolved-symbol failures without editing
+         # either module source tree.
+         rmnet_mem_module="qcom/opensource/datarmnet-ext/mem"
+         ipa_module="qcom/opensource/dataipa/drivers/platform/msm"
+         ordered_module_paths=()
+         for priority_module in "${rmnet_mem_module}" "${ipa_module}"; do
+           for module_path in "${module_paths[@]}"; do
+             if [[ "${module_path}" == "${priority_module}" ]]; then
+               ordered_module_paths+=("${module_path}")
+             fi
+           done
+         done
+         for module_path in "${module_paths[@]}"; do
+           if [[ "${module_path}" != "${rmnet_mem_module}" && "${module_path}" != "${ipa_module}" ]]; then
+             ordered_module_paths+=("${module_path}")
+           fi
+         done
+         module_paths=("${ordered_module_paths[@]}")
+
          printf 'External module build paths:\n%s\n' "${module_paths[@]}"
          for module_path in "${module_paths[@]}"; do
            # Common Qualcomm module roots are passed for repositories whose
            # Kbuild files use them; unrelated modules safely ignore them.
            module_dir="${modules_root}/${module_path}"
-           build_external_module "${module_path}" \
+           module_build_args=(
              AUDIO_ROOT="${module_dir}" \
              KP_MODULE_ROOT="${module_dir}" \
              DISPLAY_ROOT="${module_dir}" \
@@ -269,6 +306,18 @@ jobs:
              SSG_MODULE_ROOT="${module_dir}" \
              VIDEO_ROOT="${module_dir}" \
              NFC_ROOT="${module_dir}"
+           )
+
+           if [[ "${module_path}" == "${ipa_module}" ]]; then
+             rmnet_symvers="${modules_root}/${rmnet_mem_module}/Module.symvers"
+             if [[ ! -f "${rmnet_symvers}" ]]; then
+               echo "ERROR: RMNET symbol versions were not generated: ${rmnet_symvers}"
+               exit 1
+             fi
+             module_build_args+=("KBUILD_EXTRA_SYMBOLS=${rmnet_symvers}")
+           fi
+
+           build_external_module "${module_path}" "${module_build_args[@]}"
          done
 
          rm -rf "${{ env.DTB_STAGING }}"
