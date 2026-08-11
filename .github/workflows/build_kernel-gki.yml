@@ -297,15 +297,34 @@ jobs:
          for module_path in "${module_paths[@]}"; do
            # Common Qualcomm module roots are passed for repositories whose
            # Kbuild files use them; unrelated modules safely ignore them.
+           # Do this centrally rather than patching individual module trees.
            module_dir="${modules_root}/${module_path}"
+           # These Kbuild files concatenate the root directly with a child
+           # directory, so retain the trailing slash as their Android build
+           # environment normally does.
+           mm_drivers_root="${modules_root}/qcom/opensource/mm-drivers/"
+           rmnet_core_root="${modules_root}/qcom/opensource/datarmnet/core"
            module_build_args=(
+             KERNEL_SRC="${{ github.workspace }}/kernel" \
+             KERNEL_ROOT="${{ github.workspace }}/kernel" \
+             TARGET_PRODUCT="${{ github.event.inputs.DEVICE_CODENAME }}" \
              AUDIO_ROOT="${module_dir}" \
+             CAMERA_KERNEL_ROOT="${module_dir}" \
              KP_MODULE_ROOT="${module_dir}" \
              DISPLAY_ROOT="${module_dir}" \
              MMRM_ROOT="${module_dir}" \
+             DSP_ROOT="${module_dir}" \
+             KGSL_PATH="${module_dir}" \
+             MSM_HW_FENCE_ROOT="${mm_drivers_root}" \
+             MSM_EXT_DISPLAY_ROOT="${mm_drivers_root}" \
              SSG_MODULE_ROOT="${module_dir}" \
+             SPU_ROOT="${module_dir}" \
+             SYNC_FENCE_ROOT="${mm_drivers_root}" \
+             SYNX_ROOT="${module_dir}" \
+             TOUCH_ROOT="${module_dir}" \
              VIDEO_ROOT="${module_dir}" \
-             NFC_ROOT="${module_dir}"
+             NFC_ROOT="${module_dir}" \
+             RMNET_CORE_INC_DIR="${rmnet_core_root}"
            )
 
            if [[ "${module_path}" == "${ipa_module}" ]]; then
