@@ -244,14 +244,19 @@ jobs:
 
          modules_root="${{ github.workspace }}/modules"
          module_paths=()
+
+         # Build every external Kbuild root discovered in MODULES_SOURCE.
+         # No Qualcomm/vendor module names are hard-coded here.  The kernel
+         # configuration remains the source of truth for whether a module is
+         # enabled as =m; the external Kbuild is then invoked for every root.
          if [[ "${{ github.event.inputs.MODULES_BUILD_PATHS }}" == "auto" ]]; then
-           # A module root has Kbuild but no parent Kbuild inside MODULES_SOURCE.
-           # This works across Qualcomm module repositories without assuming a
-           # chipset, device codename, or fixed qcom/opensource layout.
            while IFS= read -r kbuild_file; do
              module_dir="$(dirname "${kbuild_file}")"
              parent_dir="$(dirname "${module_dir}")"
              nested_module=false
+
+             # If a parent Kbuild owns this directory, it is not a separate
+             # top-level root.  Its parent will drive the nested Kbuild.
              while [[ "${parent_dir}" != "${modules_root}" ]]; do
                if [[ -f "${parent_dir}/Kbuild" ]]; then
                  nested_module=true
@@ -259,6 +264,7 @@ jobs:
                fi
                parent_dir="$(dirname "${parent_dir}")"
              done
+
              if [[ "${nested_module}" == false ]]; then
                module_paths+=("${module_dir#"${modules_root}/"}")
              fi
@@ -268,75 +274,135 @@ jobs:
          fi
 
          if [[ ${#module_paths[@]} -eq 0 ]]; then
-           echo "ERROR: No external module roots found. Set MODULES_BUILD_PATHS explicitly."
+           echo "ERROR: No external Kbuild roots found."
+           echo "Set MODULES_BUILD_PATHS to 'auto' or provide Kbuild roots explicitly."
            exit 1
          fi
 
-         # IPA imports symbols exported by rmnet_mem.  Build its provider
-         # first and give IPA the resulting symbol version file; this avoids
-         # both missing-header and unresolved-symbol failures without editing
-         # either module source tree.
-         rmnet_mem_module="qcom/opensource/datarmnet-ext/mem"
-         ipa_module="qcom/opensource/dataipa/drivers/platform/msm"
-         ordered_module_paths=()
-         for priority_module in "${rmnet_mem_module}" "${ipa_module}"; do
-           for module_path in "${module_paths[@]}"; do
-             if [[ "${module_path}" == "${priority_module}" ]]; then
-               ordered_module_paths+=("${module_path}")
-             fi
-           done
-         done
-         for module_path in "${module_paths[@]}"; do
-           if [[ "${module_path}" != "${rmnet_mem_module}" && "${module_path}" != "${ipa_module}" ]]; then
-             ordered_module_paths+=("${module_path}")
-           fi
-         done
-         module_paths=("${ordered_module_paths[@]}")
+         printf 'External module build roots:\n'
+         printf '  %s\n' "${module_paths[@]}"
 
-         printf 'External module build paths:\n%s\n' "${module_paths[@]}"
-         for module_path in "${module_paths[@]}"; do
-           # Common Qualcomm module roots are passed for repositories whose
-           # Kbuild files use them; unrelated modules safely ignore them.
-           # Do this centrally rather than patching individual module trees.
-           module_dir="${modules_root}/${module_path}"
-           # These Kbuild files concatenate the root directly with a child
-           # directory, so retain the trailing slash as their Android build
-           # environment normally does.
-           mm_drivers_root="${modules_root}/qcom/opensource/mm-drivers/"
-           rmnet_core_root="${modules_root}/qcom/opensource/datarmnet/core"
-           module_build_args=(
-             KERNEL_SRC="${{ github.workspace }}/kernel" \
-             KERNEL_ROOT="${{ github.workspace }}/kernel" \
-             TARGET_PRODUCT="${{ github.event.inputs.DEVICE_CODENAME }}" \
-             AUDIO_ROOT="${module_dir}" \
-             CAMERA_KERNEL_ROOT="${module_dir}" \
-             KP_MODULE_ROOT="${module_dir}" \
-             DISPLAY_ROOT="${module_dir}" \
-             MMRM_ROOT="${module_dir}" \
-             DSP_ROOT="${module_dir}" \
-             KGSL_PATH="${module_dir}" \
-             MSM_HW_FENCE_ROOT="${mm_drivers_root}" \
-             MSM_EXT_DISPLAY_ROOT="${mm_drivers_root}" \
-             SSG_MODULE_ROOT="${module_dir}" \
-             SPU_ROOT="${module_dir}" \
-             SYNC_FENCE_ROOT="${mm_drivers_root}" \
-             SYNX_ROOT="${module_dir}" \
-             TOUCH_ROOT="${module_dir}" \
-             VIDEO_ROOT="${module_dir}" \
-             NFC_ROOT="${module_dir}" \
+         # ------------------------------------------------------------------
+         # Generic external-module build
+         # ------------------------------------------------------------------
+         #
+         # Do not maintain a hand-written dependency list such as:
+         #
+         #   rmnet/core -> rmnet/mem -> aps -> IPA
+         #
+         # External Qualcomm trees can change their dependency graph between
+         # branches.  Instead:
+         #
+         #   1. Build every discovered root once with modpost warnings enabled.
+         #      This produces each root's Module.symvers.
+         #   2. Collect every generated Module.symvers.
+         #   3. Rebuild every root with ALL external symbol tables supplied to
+         #      Kbuild.  modpost can then resolve provider/consumer symbols
+         #      regardless of their directory names or build order.
+         #
+         # This keeps the workflow completely tree/config driven.
+
+         mm_drivers_root="${modules_root}/qcom/opensource/mm-drivers/"
+         rmnet_core_root="${modules_root}/qcom/opensource/datarmnet/core"
+
+         # Keep common Qualcomm build variables generic.  Modules that do not
+         # use one simply ignore it.
+         build_module() {
+           local module_path="$1"
+           local modpost_warn="$2"
+           local extra_symvers="$3"
+           local module_dir="${modules_root}/${module_path}"
+
+           local module_build_args=(
+             KERNEL_SRC="${{ github.workspace }}/kernel"
+             KERNEL_ROOT="${{ github.workspace }}/kernel"
+             TARGET_PRODUCT="${{ github.event.inputs.DEVICE_CODENAME }}"
+
+             AUDIO_ROOT="${module_dir}"
+             CAMERA_KERNEL_ROOT="${module_dir}"
+             KP_MODULE_ROOT="${module_dir}"
+             DISPLAY_ROOT="${module_dir}"
+             MMRM_ROOT="${module_dir}"
+             DSP_ROOT="${module_dir}"
+             KGSL_PATH="${module_dir}"
+
+             MSM_HW_FENCE_ROOT="${mm_drivers_root}"
+             MSM_EXT_DISPLAY_ROOT="${mm_drivers_root}"
+
+             SSG_MODULE_ROOT="${module_dir}"
+             SPU_ROOT="${module_dir}"
+             SYNC_FENCE_ROOT="${mm_drivers_root}"
+             SYNX_ROOT="${module_dir}"
+             TOUCH_ROOT="${module_dir}"
+             VIDEO_ROOT="${module_dir}"
+             NFC_ROOT="${module_dir}"
+
+             # Kept for trees whose Kbuild expects this common RMNET variable.
+             # It does not select or force any particular RMNET module.
              RMNET_CORE_INC_DIR="${rmnet_core_root}"
            )
 
-           if [[ "${module_path}" == "${ipa_module}" ]]; then
-             rmnet_symvers="${modules_root}/${rmnet_mem_module}/Module.symvers"
-             if [[ ! -f "${rmnet_symvers}" ]]; then
-               echo "ERROR: RMNET symbol versions were not generated: ${rmnet_symvers}"
-               exit 1
-             fi
-             module_build_args+=("KBUILD_EXTRA_SYMBOLS=${rmnet_symvers}")
+           if [[ -n "${extra_symvers}" ]]; then
+             module_build_args+=("KBUILD_EXTRA_SYMBOLS=${extra_symvers}")
            fi
 
+           if [[ "${modpost_warn}" == "1" ]]; then
+             module_build_args+=("KBUILD_MODPOST_WARN=1")
+           fi
+
+           echo
+           echo "============================================================"
+           echo "Building external module root: ${module_path}"
+           echo "============================================================"
+
            build_external_module "${module_path}" "${module_build_args[@]}"
+         }
+
+         # Remove stale Module.symvers files before the first pass.  Otherwise
+         # a failed/changed build could accidentally feed symbols from an old
+         # checkout into the current build.
+         while IFS= read -r symvers; do
+           rm -f "${symvers}"
+         done < <(find "${modules_root}" -type f -name Module.symvers -print)
+
+         # Pass 1: compile everything selected by the external Kbuilds.
+         # modpost warnings are allowed temporarily so all providers can emit
+         # their Module.symvers even when another root is built later.
+         for module_path in "${module_paths[@]}"; do
+           build_module "${module_path}" "1" ""
+         done
+
+         # Collect every symbol table generated by the first pass.
+         symvers_files=()
+         while IFS= read -r symvers; do
+           symvers_files+=("${symvers}")
+         done < <(
+           find "${modules_root}" \
+             -type f \
+             -name Module.symvers \
+             -print |
+           sort
+         )
+
+         if [[ ${#symvers_files[@]} -eq 0 ]]; then
+           echo "ERROR: No external Module.symvers files were generated."
+           exit 1
+         fi
+
+         extra_symvers="$(printf '%s ' "${symvers_files[@]}")"
+         extra_symvers="${extra_symvers% }"
+
+         echo
+         echo "============================================================"
+         echo "External symbol tables discovered:"
+         printf '  %s\n' "${symvers_files[@]}"
+         echo "============================================================"
+
+         # Pass 2: rebuild every external root with the complete symbol graph.
+         # This is the strict pass: unresolved symbols now fail modpost instead
+         # of being hidden by KBUILD_MODPOST_WARN.
+         for module_path in "${module_paths[@]}"; do
+           build_module "${module_path}" "0" "${extra_symvers}"
          done
 
          rm -rf "${{ env.DTB_STAGING }}"
