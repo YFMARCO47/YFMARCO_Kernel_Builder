@@ -243,167 +243,44 @@ jobs:
          compile
 
          modules_root="${{ github.workspace }}/modules"
-         module_paths=()
 
-         # Build every external Kbuild root discovered in MODULES_SOURCE.
-         # No Qualcomm/vendor module names are hard-coded here.  The kernel
-         # configuration remains the source of truth for whether a module is
-         # enabled as =m; the external Kbuild is then invoked for every root.
-         if [[ "${{ github.event.inputs.MODULES_BUILD_PATHS }}" == "auto" ]]; then
-           while IFS= read -r kbuild_file; do
-             module_dir="$(dirname "${kbuild_file}")"
-             parent_dir="$(dirname "${module_dir}")"
-             nested_module=false
-
-             # If a parent Kbuild owns this directory, it is not a separate
-             # top-level root.  Its parent will drive the nested Kbuild.
-             while [[ "${parent_dir}" != "${modules_root}" ]]; do
-               if [[ -f "${parent_dir}/Kbuild" ]]; then
-                 nested_module=true
-                 break
-               fi
-               parent_dir="$(dirname "${parent_dir}")"
-             done
-
-             if [[ "${nested_module}" == false ]]; then
-               module_paths+=("${module_dir#"${modules_root}/"}")
-             fi
-           done < <(find "${modules_root}" -type f -name Kbuild -print | sort)
-         else
-           read -r -a module_paths <<< "${{ github.event.inputs.MODULES_BUILD_PATHS }}"
-         fi
-
-         if [[ ${#module_paths[@]} -eq 0 ]]; then
-           echo "ERROR: No external Kbuild roots found."
-           echo "Set MODULES_BUILD_PATHS to 'auto' or provide Kbuild roots explicitly."
-           exit 1
-         fi
-
-         printf 'External module build roots:\n'
-         printf '  %s\n' "${module_paths[@]}"
-
-         # ------------------------------------------------------------------
-         # Generic external-module build
-         # ------------------------------------------------------------------
+         # The kernel .config is the source of truth.
          #
-         # Do not maintain a hand-written dependency list such as:
-         #
-         #   rmnet/core -> rmnet/mem -> aps -> IPA
-         #
-         # External Qualcomm trees can change their dependency graph between
-         # branches.  Instead:
-         #
-         #   1. Build every discovered root once with modpost warnings enabled.
-         #      This produces each root's Module.symvers.
-         #   2. Collect every generated Module.symvers.
-         #   3. Rebuild every root with ALL external symbol tables supplied to
-         #      Kbuild.  modpost can then resolve provider/consumer symbols
-         #      regardless of their directory names or build order.
-         #
-         # This keeps the workflow completely tree/config driven.
-
-         mm_drivers_root="${modules_root}/qcom/opensource/mm-drivers/"
-         rmnet_core_root="${modules_root}/qcom/opensource/datarmnet/core"
-
-         # Keep common Qualcomm build variables generic.  Modules that do not
-         # use one simply ignore it.
-         build_module() {
-           local module_path="$1"
-           local modpost_warn="$2"
-           local extra_symvers="$3"
-           local module_dir="${modules_root}/${module_path}"
-
-           local module_build_args=(
-             KERNEL_SRC="${{ github.workspace }}/kernel"
-             KERNEL_ROOT="${{ github.workspace }}/kernel"
-             TARGET_PRODUCT="${{ github.event.inputs.DEVICE_CODENAME }}"
-
-             AUDIO_ROOT="${module_dir}"
-             CAMERA_KERNEL_ROOT="${module_dir}"
-             KP_MODULE_ROOT="${module_dir}"
-             DISPLAY_ROOT="${module_dir}"
-             MMRM_ROOT="${module_dir}"
-             DSP_ROOT="${module_dir}"
-             KGSL_PATH="${module_dir}"
-
-             MSM_HW_FENCE_ROOT="${mm_drivers_root}"
-             MSM_EXT_DISPLAY_ROOT="${mm_drivers_root}"
-
-             SSG_MODULE_ROOT="${module_dir}"
-             SPU_ROOT="${module_dir}"
-             SYNC_FENCE_ROOT="${mm_drivers_root}"
-             SYNX_ROOT="${module_dir}"
-             TOUCH_ROOT="${module_dir}"
-             VIDEO_ROOT="${module_dir}"
-             NFC_ROOT="${module_dir}"
-
-             # Kept for trees whose Kbuild expects this common RMNET variable.
-             # It does not select or force any particular RMNET module.
-             RMNET_CORE_INC_DIR="${rmnet_core_root}"
-           )
-
-           if [[ -n "${extra_symvers}" ]]; then
-             module_build_args+=("KBUILD_EXTRA_SYMBOLS=${extra_symvers}")
-           fi
-
-           if [[ "${modpost_warn}" == "1" ]]; then
-             module_build_args+=("KBUILD_MODPOST_WARN=1")
-           fi
-
-           echo
-           echo "============================================================"
-           echo "Building external module root: ${module_path}"
-           echo "============================================================"
-
-           build_external_module "${module_path}" "${module_build_args[@]}"
-         }
-
-         # Remove stale Module.symvers files before the first pass.  Otherwise
-         # a failed/changed build could accidentally feed symbols from an old
-         # checkout into the current build.
-         while IFS= read -r symvers; do
-           rm -f "${symvers}"
-         done < <(find "${modules_root}" -type f -name Module.symvers -print)
-
-         # Pass 1: compile everything selected by the external Kbuilds.
-         # modpost warnings are allowed temporarily so all providers can emit
-         # their Module.symvers even when another root is built later.
-         for module_path in "${module_paths[@]}"; do
-           build_module "${module_path}" "1" ""
-         done
-
-         # Collect every symbol table generated by the first pass.
-         symvers_files=()
-         while IFS= read -r symvers; do
-           symvers_files+=("${symvers}")
-         done < <(
-           find "${modules_root}" \
-             -type f \
-             -name Module.symvers \
-             -print |
-           sort
-         )
-
-         if [[ ${#symvers_files[@]} -eq 0 ]]; then
-           echo "ERROR: No external Module.symvers files were generated."
-           exit 1
-         fi
-
-         extra_symvers="$(printf '%s ' "${symvers_files[@]}")"
-         extra_symvers="${extra_symvers% }"
-
+         # Do NOT scan the modules repository and manually invoke every Kbuild.
+         # The top-level kernel Kbuild already knows which external modules are
+         # selected by CONFIG_* =m and will build only those modules.
          echo
          echo "============================================================"
-         echo "External symbol tables discovered:"
-         printf '  %s\n' "${symvers_files[@]}"
+         echo "Building CONFIG-selected external modules"
          echo "============================================================"
 
-         # Pass 2: rebuild every external root with the complete symbol graph.
-         # This is the strict pass: unresolved symbols now fail modpost instead
-         # of being hidden by KBUILD_MODPOST_WARN.
-         for module_path in "${module_paths[@]}"; do
-           build_module "${module_path}" "0" "${extra_symvers}"
-         done
+         make -j$(nproc --all) \
+           O=${{ env.OBJDIR }} \
+           ARCH=arm64 \
+           CC=clang \
+           KCFLAGS="${common_kcflags} ${module_header_cflags}" \
+           CROSS_COMPILE=aarch64-linux-gnu- \
+           CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+           CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+           AR=llvm-ar \
+           LLVM_NM=llvm-nm \
+           OBJCOPY=llvm-objcopy \
+           LD=ld.lld \
+           NM=llvm-nm \
+           LLVM=1 \
+           LLVM_IAS=1 \
+           KBUILD_DTC_INCLUDE="${{ github.workspace }}/devicetrees" \
+           modules
+
+         # The kernel Kbuild/configuration decides which .ko files exist.
+         if ! find "${modules_root}" -type f -name '*.ko' -print -quit | grep -q .; then
+           echo "ERROR: Kernel config requested external modules, but no .ko files were produced."
+           exit 1
+         fi
+
+         echo
+         echo "CONFIG-selected external modules:"
+         find "${modules_root}" -type f -name '*.ko' -print | sort
 
          rm -rf "${{ env.DTB_STAGING }}"
          dtb_type_args=()
