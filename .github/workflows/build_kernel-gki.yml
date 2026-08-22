@@ -242,7 +242,7 @@ jobs:
          make_defconfig
          compile
 
-         modules_root="${{ github.workspace }}/modules"
+         modules_root="${{ env.OBJDIR }}"
 
          # The kernel .config is the source of truth.
          #
@@ -356,7 +356,7 @@ jobs:
                   cp -f "${compiled_dtbo}" "${{ env.ANYKERNEL }}/dtbo.img" || true
                   cp -f "${compiled_dtbo}" "${{ env.OUTPUT_DIR }}/dtbo.img" || true
               fi
- 
+
               if [[ -f "${compiled_dtb_img}" ]]; then
                   cp -f "${compiled_dtb_img}" "${{ env.ANYKERNEL }}/dtb.img" || true
                   cp -f "${compiled_dtb_img}" "${{ env.OUTPUT_DIR }}/dtb.img" || true
