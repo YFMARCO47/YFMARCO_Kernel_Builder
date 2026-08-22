@@ -242,6 +242,9 @@ jobs:
          make_defconfig
          compile
 
+         # Kbuild places the generated modules under the output tree.
+         # Keep this pointed at OBJDIR so the check/zip stage sees the
+         # CONFIG-selected .ko files that were actually produced.
          modules_root="${{ env.OBJDIR }}"
 
          # The kernel .config is the source of truth.
@@ -282,11 +285,23 @@ jobs:
          echo "CONFIG-selected external modules:"
          find "${modules_root}" -type f -name '*.ko' -print | sort
 
+         echo
+         echo "============================================================"
+         echo "Installing Device Trees"
+         echo "============================================================"
+
          rm -rf "${{ env.DTB_STAGING }}"
+         mkdir -p "${{ env.DTB_STAGING }}"
+
          dtb_type_args=()
          if [[ -n "${{ github.event.inputs.DTB_TYPES }}" ]]; then
            dtb_type_args=("DTB_TYPES=${{ github.event.inputs.DTB_TYPES }}")
          fi
+
+         # Keep the normal Kbuild dtbs_install step.
+         # Some vendor Qualcomm Makefiles override dtbs/dtbs_install and
+         # return without copying the generated files, so a fallback below
+         # stages the DTBs directly from the actual O= output tree.
          make -j$(nproc --all) \
            O=${{ env.OBJDIR }} \
            ARCH=arm64 \
@@ -299,12 +314,41 @@ jobs:
            KBUILD_DTC_INCLUDE="${{ github.workspace }}/devicetrees" \
            INSTALL_DTBS_PATH="${{ env.DTB_STAGING }}" \
            "${dtb_type_args[@]}" \
-           dtbs_install
+           dtbs_install || true
 
-         if ! find "${{ env.DTB_STAGING }}" -type f \( -name '*.dtb' -o -name '*.dtbo' \) -print -quit | grep -q .; then
+         # If the vendor Makefile did not install anything, collect the DTBs
+         # directly from the kernel output tree.
+         if ! find "${{ env.DTB_STAGING }}" -type f \( -name '*.dtb' -o -name '*.dtbo' \) -print -quit 2>/dev/null | grep -q .; then
+           echo "dtbs_install did not produce DTB/DTBO files."
+           echo "Searching kernel output tree for generated DTBs..."
+
+           mapfile -t built_dtbs < <(
+             find "${{ env.OBJDIR }}/arch/arm64/boot" \
+               -type f \
+               \( -name '*.dtb' -o -name '*.dtbo' \) \
+               -print | sort
+           )
+
+           if [[ ${#built_dtbs[@]} -eq 0 ]]; then
+             echo "ERROR: No generated DTB/DTBO files were found in ${modules_root}"
+             exit 1
+           fi
+
+           for dtb_file in "${built_dtbs[@]}"; do
+             relative_path="${dtb_file#${{ env.OBJDIR }}/arch/arm64/boot/}"
+             mkdir -p "${{ env.DTB_STAGING }}/$(dirname "${relative_path}")"
+             cp -f "${dtb_file}" "${{ env.DTB_STAGING }}/${relative_path}"
+           done
+         fi
+
+         if ! find "${{ env.DTB_STAGING }}" -type f \( -name '*.dtb' -o -name '*.dtbo' \) -print -quit 2>/dev/null | grep -q .; then
            echo "ERROR: No DTB/DTBO files were installed"
            exit 1
          fi
+
+         echo
+         echo "Generated DTB/DTBO files:"
+         find "${{ env.DTB_STAGING }}" -type f \( -name '*.dtb' -o -name '*.dtbo' \) -print | sort
 
          (
            cd "${{ env.DTB_STAGING }}"
