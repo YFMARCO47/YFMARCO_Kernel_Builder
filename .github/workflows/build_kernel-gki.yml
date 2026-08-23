@@ -242,16 +242,8 @@ jobs:
          make_defconfig
          compile
 
-         # Kbuild places the generated modules under the output tree.
-         # Keep this pointed at OBJDIR so the check/zip stage sees the
-         # CONFIG-selected .ko files that were actually produced.
          modules_root="${{ env.OBJDIR }}"
 
-         # The kernel .config is the source of truth.
-         #
-         # Do NOT scan the modules repository and manually invoke every Kbuild.
-         # The top-level kernel Kbuild already knows which external modules are
-         # selected by CONFIG_* =m and will build only those modules.
          echo
          echo "============================================================"
          echo "Building CONFIG-selected external modules"
@@ -275,7 +267,6 @@ jobs:
            KBUILD_DTC_INCLUDE="${{ github.workspace }}/devicetrees" \
            modules
 
-         # The kernel Kbuild/configuration decides which .ko files exist.
          if ! find "${modules_root}" -type f -name '*.ko' -print -quit | grep -q .; then
            echo "ERROR: Kernel config requested external modules, but no .ko files were produced."
            exit 1
@@ -298,10 +289,6 @@ jobs:
            dtb_type_args=("DTB_TYPES=${{ github.event.inputs.DTB_TYPES }}")
          fi
 
-         # Keep the normal Kbuild dtbs_install step.
-         # Some vendor Qualcomm Makefiles override dtbs/dtbs_install and
-         # return without copying the generated files, so a fallback below
-         # stages the DTBs directly from the actual O= output tree.
          make -j$(nproc --all) \
            O=${{ env.OBJDIR }} \
            ARCH=arm64 \
@@ -316,8 +303,6 @@ jobs:
            "${dtb_type_args[@]}" \
            dtbs_install || true
 
-         # If the vendor Makefile did not install anything, collect the DTBs
-         # directly from the kernel output tree.
          if ! find "${{ env.DTB_STAGING }}" -type f \( -name '*.dtb' -o -name '*.dtbo' \) -print -quit 2>/dev/null | grep -q .; then
            echo "dtbs_install did not produce DTB/DTBO files."
            echo "Searching kernel output tree for generated DTBs..."
@@ -378,23 +363,36 @@ jobs:
          compiled_image="arch/arm64/boot/Image"
          compiled_gz_image="arch/arm64/boot/Image.gz"
          compiled_gz_dtb="arch/arm64/boot/Image.gz-dtb"
+         compiled_lz4_image="arch/arm64/boot/Image.lz4"
+         compiled_lz4_dtb="arch/arm64/boot/Image.lz4-dtb"
+         compiled_dtb_image="arch/arm64/boot/Image-dtb"
          compiled_dtbo="arch/arm64/boot/dtbo.img"
          compiled_dtb_img="arch/arm64/boot/dtb.img"
          compiled_dtb="arch/arm64/boot/dtb"
+
+         kernel_image=""
+
+         if [[ -f "${compiled_image}" ]]; then
+             kernel_image="${compiled_image}"
+         elif [[ -f "${compiled_gz_image}" ]]; then
+             kernel_image="${compiled_gz_image}"
+         elif [[ -f "${compiled_lz4_image}" ]]; then
+             kernel_image="${compiled_lz4_image}"
+         elif [[ -f "${compiled_gz_dtb}" ]]; then
+             kernel_image="${compiled_gz_dtb}"
+         elif [[ -f "${compiled_lz4_dtb}" ]]; then
+             kernel_image="${compiled_lz4_dtb}"
+         elif [[ -f "${compiled_dtb_image}" ]]; then
+             kernel_image="${compiled_dtb_image}"
+         fi
            
-         if [[ -f ${compiled_image} || -f ${compiled_gz_image} || -f ${compiled_gz_dtb} ]]; then
+         if [[ -n "${kernel_image}" ]]; then
               git clone -q ${{ github.event.inputs.ANYKERNEL }} "${{ env.ANYKERNEL }}"
 
-              if [[ -f "${compiled_image}" ]]; then
-                  cp -f "${compiled_image}" "${{ env.ANYKERNEL }}/Image" || true
-                  cp -f "${compiled_image}" "${{ env.OUTPUT_DIR }}/Image" || true
-              elif [[ -f "${compiled_gz_image}" ]]; then
-                  cp -f "${compiled_gz_image}" "${{ env.ANYKERNEL }}/Image.gz" || true
-                  cp -f "${compiled_gz_image}" "${{ env.OUTPUT_DIR }}/Image.gz" || true
-              elif [[ -f "${compiled_gz_dtb}" ]]; then
-                  cp -f "${compiled_gz_dtb}" "${{ env.ANYKERNEL }}/Image.gz-dtb" || true
-                  cp -f "${compiled_gz_dtb}" "${{ env.OUTPUT_DIR }}/Image.gz-dtb" || true
-              fi
+              kernel_name=$(basename "${kernel_image}")
+
+              cp -f "${kernel_image}" "${{ env.ANYKERNEL }}/${kernel_name}" || true
+              cp -f "${kernel_image}" "${{ env.OUTPUT_DIR }}/${kernel_name}" || true
               
               if [[ -f "${compiled_dtbo}" ]]; then
                   cp -f "${compiled_dtbo}" "${{ env.ANYKERNEL }}/dtbo.img" || true
@@ -416,6 +414,8 @@ jobs:
               rm -rf "${{ env.ANYKERNEL }}"
          else
               echo "ERROR: Some output is missing!"
+              echo "Available files in arch/arm64/boot:"
+              find "${{ env.OBJDIR }}/arch/arm64/boot" -maxdepth 2 -type f -print | sort
               exit 1
          fi
          
