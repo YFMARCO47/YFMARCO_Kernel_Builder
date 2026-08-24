@@ -87,9 +87,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Different Qualcomm kernels use different sibling names (for example
-          # sm6475-modules or sm8750-modules). Discover the name(s) requested by
-          # this kernel and link the selected MODULES_SOURCE under each one.
           mapfile -t module_link_names < <(
             sed -nE 's|^[[:space:]]*ext-mod-dir[[:space:]]*:=[[:space:]]*\.\./([^/[:space:]]+-modules)[[:space:]]*$|\1|p' "${{ github.workspace }}/kernel/Makefile" | sort -u
           )
@@ -102,10 +99,6 @@ jobs:
             ln -sfn "${{ github.workspace }}/modules" "${module_link}"
           done
 
-          # arch/arm64/boot/dts/Makefile switches to the vendor tree when this
-          # directory exists. The devicetrees repository already has the expected
-          # qcom/ and samsung/ layout, so it must be linked as vendor, not copied
-          # into the upstream qcom directory.
           vendor_dts="${{ github.workspace }}/kernel/arch/arm64/boot/dts/vendor"
           if [[ -e "${vendor_dts}" && ! -L "${vendor_dts}" ]]; then
             echo "ERROR: ${vendor_dts} already exists and is not a symbolic link"
@@ -149,10 +142,6 @@ jobs:
          
          export PATH="${{ env.CLANG_DIR }}/bin:$PATH"
 
-         # Keep external modules on the same include contract as the in-tree
-         # build.  Kernel headers (including include/linux/dmapool.h) are
-         # supplied by Kbuild.  IPA additionally consumes the public RMNET
-         # memory header from the sibling datarmnet module repository.
          rmnet_mem_header="$(find "${{ github.workspace }}/modules" -type f -path '*/datarmnet-ext/mem/rmnet_mem.h' -print -quit)"
          if [[ -z "${rmnet_mem_header}" ]]; then
            echo "ERROR: datarmnet RMNET memory header was not found"
@@ -207,7 +196,7 @@ jobs:
             LLVM=1 \
             LLVM_IAS=1 \
             KBUILD_DTC_INCLUDE="${{ github.workspace }}/devicetrees" \
-            modules dtbs
+            Image modules dtbs
          }
 
          build_external_module() {
@@ -242,16 +231,8 @@ jobs:
          make_defconfig
          compile
 
-         # Kbuild places the generated modules under the output tree.
-         # Keep this pointed at OBJDIR so the check/zip stage sees the
-         # CONFIG-selected .ko files that were actually produced.
          modules_root="${{ env.OBJDIR }}"
 
-         # The kernel .config is the source of truth.
-         #
-         # Do NOT scan the modules repository and manually invoke every Kbuild.
-         # The top-level kernel Kbuild already knows which external modules are
-         # selected by CONFIG_* =m and will build only those modules.
          echo
          echo "============================================================"
          echo "Building CONFIG-selected external modules"
@@ -275,7 +256,6 @@ jobs:
            KBUILD_DTC_INCLUDE="${{ github.workspace }}/devicetrees" \
            modules
 
-         # The kernel Kbuild/configuration decides which .ko files exist.
          if ! find "${modules_root}" -type f -name '*.ko' -print -quit | grep -q .; then
            echo "ERROR: Kernel config requested external modules, but no .ko files were produced."
            exit 1
@@ -298,10 +278,6 @@ jobs:
            dtb_type_args=("DTB_TYPES=${{ github.event.inputs.DTB_TYPES }}")
          fi
 
-         # Keep the normal Kbuild dtbs_install step.
-         # Some vendor Qualcomm Makefiles override dtbs/dtbs_install and
-         # return without copying the generated files, so a fallback below
-         # stages the DTBs directly from the actual O= output tree.
          make -j$(nproc --all) \
            O=${{ env.OBJDIR }} \
            ARCH=arm64 \
@@ -316,8 +292,6 @@ jobs:
            "${dtb_type_args[@]}" \
            dtbs_install || true
 
-         # If the vendor Makefile did not install anything, collect the DTBs
-         # directly from the kernel output tree.
          if ! find "${{ env.DTB_STAGING }}" -type f \( -name '*.dtb' -o -name '*.dtbo' \) -print -quit 2>/dev/null | grep -q .; then
            echo "dtbs_install did not produce DTB/DTBO files."
            echo "Searching kernel output tree for generated DTBs..."
@@ -352,13 +326,13 @@ jobs:
 
          (
            cd "${{ env.DTB_STAGING }}"
-           zip -qr "${{ env.OUTPUT_DIR }}/dtbs-${{ github.event.inputs.DEVICE_CODENAME }}.zip" .
+           zip -qr "${{ env.OUTPUT_DIR }}/dtbs-${{ env.DEVICE_CODENAME }}.zip" .
          )
 
          if find "${modules_root}" -type f -name '*.ko' -print -quit | grep -q .; then
            (
              cd "${modules_root}"
-             find . -type f -name '*.ko' -print | zip -q "${{ env.OUTPUT_DIR }}/modules-${{ github.event.inputs.DEVICE_CODENAME }}.zip" -@
+             find . -type f -name '*.ko' -print | zip -q "${{ env.OUTPUT_DIR }}/modules-${{ env.DEVICE_CODENAME }}.zip" -@
            )
          else
            echo "ERROR: No external kernel modules were built"
@@ -392,8 +366,6 @@ jobs:
              kernel_image="${compiled_gz_dtb}"
          fi
 
-         # Fallback: if the kernel image is not under arch/arm64/boot,
-         # search the complete O= output tree for the generated image.
          if [[ -z "${kernel_image}" ]]; then
              kernel_image="$(find "${{ env.OBJDIR }}" -type f \
                  \( -name 'Image' -o -name 'Image.gz' -o -name 'Image.lz4' \
@@ -448,3 +420,4 @@ jobs:
           body: |
             [Kernel Source](${{ env.KERNEL_SOURCE_URL }}/tree/${{ github.event.inputs.KERNEL_BRANCH }})
             [Latest Commit](${{ env.KERNEL_SOURCE_URL }}/commit/${{ env.COMMIT_ID }}) at the time of building.
+```
