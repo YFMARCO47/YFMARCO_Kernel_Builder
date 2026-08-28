@@ -136,6 +136,74 @@ jobs:
          }
 
          make_defconfig
+
+         # ============================================================
+         # External Qualcomm module trees
+         # ============================================================
+         #
+         # These are the same trees declared by:
+         #
+         # ext-mod-dir := ../sm6475-modules
+         # ext-mod-dirs := \
+         #   $(ext-mod-dir)/qcom/opensource/audio-kernel \
+         #   $(ext-mod-dir)/qcom/opensource/dataipa/drivers/platform/msm \
+         #   $(ext-mod-dir)/qcom/opensource/display-drivers \
+         #   $(ext-mod-dir)/qcom/opensource/mm-sys-kernel/ubwcp \
+         #   $(ext-mod-dir)/qcom/opensource/securemsm-kernel/smmu-proxy \
+         #   $(ext-mod-dir)/qcom/opensource/video-kernel \
+         #   $(ext-mod-dir)/nxp/opensource/driver
+         #
+         # Build each external tree against the SAME kernel source,
+         # generated configuration and output directory.
+         # ============================================================
+
+         EXT_MOD_DIR="${{ github.workspace }}/sm6475-modules"
+
+         EXT_MOD_DIRS=(
+           "${EXT_MOD_DIR}/qcom/opensource/audio-kernel"
+           "${EXT_MOD_DIR}/qcom/opensource/dataipa/drivers/platform/msm"
+           "${EXT_MOD_DIR}/qcom/opensource/display-drivers"
+           "${EXT_MOD_DIR}/qcom/opensource/mm-sys-kernel/ubwcp"
+           "${EXT_MOD_DIR}/qcom/opensource/securemsm-kernel/smmu-proxy"
+           "${EXT_MOD_DIR}/qcom/opensource/video-kernel"
+           "${EXT_MOD_DIR}/nxp/opensource/driver"
+         )
+
+         for EXT_DIR in "${EXT_MOD_DIRS[@]}"; do
+           if [[ -d "${EXT_DIR}" ]]; then
+             echo "============================================================"
+             echo "Building external module tree:"
+             echo "${EXT_DIR}"
+             echo "============================================================"
+
+             make -j$(nproc --all) \
+               -C "${{ github.workspace }}/kernel" \
+               O="${{ env.OBJDIR }}" \
+               ARCH=arm64 \
+               M="${EXT_DIR}" \
+               CC=clang \
+               KCFLAGS="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types" \
+               CROSS_COMPILE=aarch64-linux-gnu- \
+               CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+               CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+               AR=llvm-ar \
+               LLVM_NM=llvm-nm \
+               OBJCOPY=llvm-objcopy \
+               LD=ld.lld \
+               NM=llvm-nm \
+               LLVM=1 \
+               LLVM_IAS=1 \
+               modules
+           else
+             echo "WARNING: External module directory not found:"
+             echo "${EXT_DIR}"
+           fi
+         done
+
+         # ============================================================
+         # Main kernel build
+         # ============================================================
+
          compile
 
          end=$(date +"%s")
