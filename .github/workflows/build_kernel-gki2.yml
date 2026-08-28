@@ -22,7 +22,7 @@ on:
       DEVICETREES_SOURCE:
         description: 'Device trees source URL'
         required: true
-        default: 'https://github.com/YFMARCO-Dev/android_kernel_sm6475-devicetrees.git'
+        default: 'https://github.com/YFMARCO-Dev/android_kernel_samsung_sm6475-devicetrees.git'
       DEVICETREES_BRANCH:
         description: 'Device trees branch'
         required: true
