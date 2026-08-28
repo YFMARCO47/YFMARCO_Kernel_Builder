@@ -22,7 +22,7 @@ on:
       DEVICETREES_SOURCE:
         description: 'Device trees source URL'
         required: true
-        default: 'https://github.com/YFMARCO-Dev/android_kernel_samsung_sm6475-devicetrees.git'
+        default: 'https://github.com/YFMARCO-Dev/android_kernel_sm6475-devicetrees.git'
       DEVICETREES_BRANCH:
         description: 'Device trees branch'
         required: true
@@ -138,23 +138,46 @@ jobs:
          make_defconfig
 
          # ============================================================
-         # External Qualcomm module trees
+         # Prepare kernel for external module builds
          # ============================================================
-         #
-         # These are the same trees declared by:
-         #
-         # ext-mod-dir := ../sm6475-modules
-         # ext-mod-dirs := \
-         #   $(ext-mod-dir)/qcom/opensource/audio-kernel \
-         #   $(ext-mod-dir)/qcom/opensource/dataipa/drivers/platform/msm \
-         #   $(ext-mod-dir)/qcom/opensource/display-drivers \
-         #   $(ext-mod-dir)/qcom/opensource/mm-sys-kernel/ubwcp \
-         #   $(ext-mod-dir)/qcom/opensource/securemsm-kernel/smmu-proxy \
-         #   $(ext-mod-dir)/qcom/opensource/video-kernel \
-         #   $(ext-mod-dir)/nxp/opensource/driver
-         #
-         # Build each external tree against the SAME kernel source,
-         # generated configuration and output directory.
+
+         make -j$(nproc --all) \
+            O=${{ env.OBJDIR }} \
+            ARCH=arm64 \
+            CC=clang \
+            KCFLAGS="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types" \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+            AR=llvm-ar \
+            LLVM_NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            LD=ld.lld \
+            NM=llvm-nm \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            prepare modules_prepare
+
+         # ============================================================
+         # Build modpost before external modules
+         # ============================================================
+
+         make -j$(nproc --all) \
+            O=${{ env.OBJDIR }} \
+            ARCH=arm64 \
+            CC=clang \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            AR=llvm-ar \
+            LLVM_NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            LD=ld.lld \
+            NM=llvm-nm \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            scripts/mod/modpost
+
+         # ============================================================
+         # External module trees
          # ============================================================
 
          EXT_MOD_DIR="${{ github.workspace }}/sm6475-modules"
@@ -171,6 +194,7 @@ jobs:
 
          for EXT_DIR in "${EXT_MOD_DIRS[@]}"; do
            if [[ -d "${EXT_DIR}" ]]; then
+
              echo "============================================================"
              echo "Building external module tree:"
              echo "${EXT_DIR}"
@@ -194,6 +218,7 @@ jobs:
                LLVM=1 \
                LLVM_IAS=1 \
                modules
+
            else
              echo "WARNING: External module directory not found:"
              echo "${EXT_DIR}"
