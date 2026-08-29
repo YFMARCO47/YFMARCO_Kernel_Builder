@@ -74,7 +74,7 @@ jobs:
           sudo apt-get install -y build-essential bc gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libssl-dev libfl-dev
           sudo apt-get install -y curl git ftp lftp wget libarchive-tools ccache python-is-python3
           sudo apt-get install -y zip unzip tar gzip bzip2 rar unrar cpio jq
-          
+
       - name: Cloning Kernel Source
         run: |
           git clone --single-branch --depth=1 --no-tags https://$(printf %s "${{ secrets.KERNEL_USERNAME }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))'):$(printf %s "${{ secrets.KERNEL_TOKEN }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))')@$(echo "${{ github.event.inputs.KERNEL_SOURCE }}" | sed 's~https://~~') -b "${{ github.event.inputs.KERNEL_BRANCH }}" "${{ github.workspace }}/kernel"
@@ -105,7 +105,7 @@ jobs:
             exit 1
           fi
           ln -sfn "${{ github.workspace }}/devicetrees" "${vendor_dts}"
-          
+
       - name: Set-up Toolchain
         run: |
          mkdir -p ${{ github.workspace }}/toolchain
@@ -133,13 +133,13 @@ jobs:
             KERNEL_SOURCE_URL="${KERNEL_SOURCE_URL%.git}"
           fi
           echo "KERNEL_SOURCE_URL=${KERNEL_SOURCE_URL}" >> $GITHUB_ENV
-         
+
       - name: Start Compilation
         run: |
          set -euo pipefail
          mkdir -p ${{ env.OUTPUT_DIR }}
          cd ${{ github.workspace }}/kernel
-         
+
          export PATH="${{ env.CLANG_DIR }}/bin:$PATH"
 
          rmnet_mem_header="$(find "${{ github.workspace }}/modules" -type f -path '*/datarmnet-ext/mem/rmnet_mem.h' -print -quit)"
@@ -153,7 +153,7 @@ jobs:
          fi
          module_header_cflags="-I$(dirname "${rmnet_mem_header}")"
          common_kcflags="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types"
-         
+
          make_defconfig() {
             start=$(date +"%s")
             read -r -a configs <<< "${{ github.event.inputs.CONFIG_FILE }}"
@@ -178,8 +178,8 @@ jobs:
               make -s ARCH=arm64 O=${{ env.OBJDIR }} olddefconfig
             fi
          }
-         
-         compile() {       
+
+         compile() {
             make -j$(nproc --all) \
             O=${{ env.OBJDIR }} \
             ARCH=arm64 \
@@ -324,6 +324,136 @@ jobs:
          echo "Generated DTB/DTBO files:"
          find "${{ env.DTB_STAGING }}" -type f \( -name '*.dtb' -o -name '*.dtbo' \) -print | sort
 
+         # ============================================================
+         # ADDED: Build dtb.img / dtbo.img
+         # ============================================================
+
+         echo
+         echo "============================================================"
+         echo "Creating DTB/DTBO Images"
+         echo "============================================================"
+
+         DT_IMAGE_TOOLS="${{ github.workspace }}/dt_image_tools"
+         mkdir -p "${DT_IMAGE_TOOLS}"
+
+         MKDTBOIMG="${DT_IMAGE_TOOLS}/mkdtboimg.py"
+
+         # Download official AOSP mkdtboimg.py.
+         if [[ ! -f "${MKDTBOIMG}" ]]; then
+           echo "Downloading AOSP mkdtboimg.py..."
+
+           wget -q -O "${MKDTBOIMG}.b64" \
+             "https://android.googlesource.com/platform/system/libufdt/+/refs/heads/main/utils/src/mkdtboimg.py?format=TEXT"
+
+           if [[ ! -s "${MKDTBOIMG}.b64" ]]; then
+             echo "ERROR: Failed to download mkdtboimg.py"
+             exit 1
+           fi
+
+           base64 -d "${MKDTBOIMG}.b64" > "${MKDTBOIMG}"
+           rm -f "${MKDTBOIMG}.b64"
+           chmod +x "${MKDTBOIMG}"
+         fi
+
+         # ------------------------------------------------------------
+         # DTB files
+         # ------------------------------------------------------------
+
+         mapfile -t DTB_FILES < <(
+           find "${{ env.DTB_STAGING }}" \
+             -type f \
+             -name '*.dtb' \
+             -print | sort
+         )
+
+         if [[ ${#DTB_FILES[@]} -gt 0 ]]; then
+           echo
+           echo "DTB files:"
+           printf '  %s\n' "${DTB_FILES[@]}"
+
+           DTB_IMAGE="${{ env.OBJDIR }}/arch/arm64/boot/dtb.img"
+
+           rm -f "${DTB_IMAGE}"
+
+           echo
+           echo "Creating dtb.img..."
+
+           python3 "${MKDTBOIMG}" create \
+             "${DTB_IMAGE}" \
+             --page_size=2048 \
+             "${DTB_FILES[@]}"
+
+           if [[ ! -f "${DTB_IMAGE}" || ! -s "${DTB_IMAGE}" ]]; then
+             echo "ERROR: dtb.img was not created"
+             exit 1
+           fi
+
+           cp -f \
+             "${DTB_IMAGE}" \
+             "${{ env.DTB_STAGING }}/dtb.img"
+
+           echo "dtb.img created successfully:"
+           ls -lh "${DTB_IMAGE}"
+         else
+           echo "ERROR: No DTB files found. Cannot create dtb.img."
+           exit 1
+         fi
+
+         # ------------------------------------------------------------
+         # DTBO files
+         # ------------------------------------------------------------
+
+         mapfile -t DTBO_FILES < <(
+           find "${{ env.DTB_STAGING }}" \
+             -type f \
+             -name '*.dtbo' \
+             -print | sort
+         )
+
+         if [[ ${#DTBO_FILES[@]} -gt 0 ]]; then
+           echo
+           echo "DTBO files:"
+           printf '  %s\n' "${DTBO_FILES[@]}"
+
+           DTBO_IMAGE="${{ env.OBJDIR }}/arch/arm64/boot/dtbo.img"
+
+           rm -f "${DTBO_IMAGE}"
+
+           echo
+           echo "Creating dtbo.img..."
+
+           python3 "${MKDTBOIMG}" create \
+             "${DTBO_IMAGE}" \
+             --page_size=2048 \
+             "${DTBO_FILES[@]}"
+
+           if [[ ! -f "${DTBO_IMAGE}" || ! -s "${DTBO_IMAGE}" ]]; then
+             echo "ERROR: dtbo.img was not created"
+             exit 1
+           fi
+
+           cp -f \
+             "${DTBO_IMAGE}" \
+             "${{ env.DTB_STAGING }}/dtbo.img"
+
+           echo "dtbo.img created successfully:"
+           ls -lh "${DTBO_IMAGE}"
+         else
+           echo "ERROR: No DTBO files found. Cannot create dtbo.img."
+           exit 1
+         fi
+
+         echo
+         echo "============================================================"
+         echo "DTB/DTBO Images Ready"
+         echo "============================================================"
+
+         echo "DTB image:"
+         ls -lh "${{ env.OBJDIR }}/arch/arm64/boot/dtb.img"
+
+         echo "DTBO image:"
+         ls -lh "${{ env.OBJDIR }}/arch/arm64/boot/dtbo.img"
+
          (
            cd "${{ env.DTB_STAGING }}"
            zip -qr "${{ env.OUTPUT_DIR }}/dtbs-${{ env.DEVICE_CODENAME }}.zip" .
@@ -344,20 +474,20 @@ jobs:
          echo -e "BUILD COMPLETED IN ${diff} SECONDS"
 
         continue-on-error: false
-         
+
       - name: Checking for outputs
         run: |
          cd "${{ env.OBJDIR }}"
-         
+
          compiled_image="arch/arm64/boot/Image"
          compiled_gz_image="arch/arm64/boot/Image.gz"
          compiled_gz_dtb="arch/arm64/boot/Image.gz-dtb"
          compiled_dtbo="arch/arm64/boot/dtbo.img"
          compiled_dtb_img="arch/arm64/boot/dtb.img"
          compiled_dtb="arch/arm64/boot/dtb"
-           
+
          kernel_image=""
-         
+
          if [[ -f "${compiled_image}" ]]; then
              kernel_image="${compiled_image}"
          elif [[ -f "${compiled_gz_image}" ]]; then
@@ -372,7 +502,7 @@ jobs:
                  -o -name 'Image.gz-dtb' -o -name 'Image.lz4-dtb' -o -name 'Image-dtb' \) \
                  -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n1 | cut -d' ' -f2-)"
          fi
-         
+
          if [[ -n "${kernel_image}" ]]; then
               git clone -q ${{ github.event.inputs.ANYKERNEL }} "${{ env.ANYKERNEL }}"
 
@@ -380,7 +510,7 @@ jobs:
 
               cp -f "${kernel_image}" "${{ env.ANYKERNEL }}/${kernel_name}" || true
               cp -f "${kernel_image}" "${{ env.OUTPUT_DIR }}/${kernel_name}" || true
-              
+
               if [[ -f "${compiled_dtbo}" ]]; then
                   cp -f "${compiled_dtbo}" "${{ env.ANYKERNEL }}/dtbo.img" || true
                   cp -f "${compiled_dtbo}" "${{ env.OUTPUT_DIR }}/dtbo.img" || true
@@ -405,7 +535,7 @@ jobs:
               find "${{ env.OBJDIR }}/arch/arm64/boot" -maxdepth 2 -type f -print | sort
               exit 1
          fi
-         
+
          zip_file=$(find ${{ env.OUTPUT_DIR }} -name '${{ github.event.inputs.KERNEL_NAME }}*.zip' -print -quit)
          echo "ZIP_NAME=$(basename "$zip_file" .zip)" >> $GITHUB_ENV
          echo "RELEASE_DATE=$(date +'%B %-d, %Y %H:%M')" >> $GITHUB_ENV
