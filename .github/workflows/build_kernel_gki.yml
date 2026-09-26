@@ -69,12 +69,18 @@ jobs:
 
       - name: Cloning Kernel Source
         run: |
+          # 1. Clone Kernel
           git clone --single-branch --depth=1 --no-tags https://$(printf %s "${{ secrets.KERNEL_USERNAME }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))'):$(printf %s "${{ secrets.KERNEL_TOKEN }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))')@$(echo "${{ github.event.inputs.KERNEL_SOURCE }}" | sed 's~https://~~') -b ${{ github.event.inputs.KERNEL_BRANCH }} ${{ github.workspace }}/kernel
 
-          git clone --single-branch --depth=1 --no-tags https://$(printf %s "${{ secrets.KERNEL_USERNAME }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))'):$(printf %s "${{ secrets.KERNEL_TOKEN }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))')@$(echo "${{ github.event.inputs.MODULES_SOURCE }}" | sed 's~https://~~') -b ${{ github.event.inputs.MODULES_BRANCH }} ${{ github.workspace }}/kernel/modules/qcom/opensource/mm-drivers || git clone --single-branch --depth=1 --no-tags ${{ github.event.inputs.MODULES_SOURCE }} -b ${{ github.event.inputs.MODULES_BRANCH }} ${{ github.workspace }}/sm6475-modules
+          # 2. Setup Modules
+          rm -rf ${{ github.workspace }}/kernel/modules/qcom/opensource/mm-drivers
+          git clone --single-branch --depth=1 --no-tags https://$(printf %s "${{ secrets.KERNEL_USERNAME }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))'):$(printf %s "${{ secrets.KERNEL_TOKEN }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))')@$(echo "${{ github.event.inputs.MODULES_SOURCE }}" | sed 's~https://~~') -b ${{ github.event.inputs.MODULES_BRANCH }} ${{ github.workspace }}/kernel/modules/qcom/opensource/mm-drivers
 
-          git clone --single-branch --depth=1 --no-tags https://$(printf %s "${{ secrets.KERNEL_USERNAME }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))'):$(printf %s "${{ secrets.KERNEL_TOKEN }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))')@$(echo "${{ github.event.inputs.DEVICETREES_SOURCE }}" | sed 's~https://~~') -b ${{ github.event.inputs.DEVICETREES_BRANCH }} ${{ github.workspace }}/kernel/arch/arm64/boot/dts/vendor || git clone --single-branch --depth=1 --no-tags ${{ github.event.inputs.DEVICETREES_SOURCE }} -b ${{ github.event.inputs.DEVICETREES_BRANCH }} ${{ github.workspace }}/sm6475-devicetrees
+          # 3. Setup Device Trees
+          rm -rf ${{ github.workspace }}/kernel/arch/arm64/boot/dts/vendor
+          git clone --single-branch --depth=1 --no-tags https://$(printf %s "${{ secrets.KERNEL_USERNAME }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))'):$(printf %s "${{ secrets.KERNEL_TOKEN }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))')@$(echo "${{ github.event.inputs.DEVICETREES_SOURCE }}" | sed 's~https://~~') -b ${{ github.event.inputs.DEVICETREES_BRANCH }} ${{ github.workspace }}/kernel/arch/arm64/boot/dts/vendor
 
+          # 4. Update Submodules
           cd ${{ github.workspace }}/kernel
           git submodule update --init --recursive
           
