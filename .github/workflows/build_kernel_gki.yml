@@ -72,9 +72,9 @@ jobs:
           # 1. Clone Kernel
           git clone --single-branch --depth=1 --no-tags https://$(printf %s "${{ secrets.KERNEL_USERNAME }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))'):$(printf %s "${{ secrets.KERNEL_TOKEN }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))')@$(echo "${{ github.event.inputs.KERNEL_SOURCE }}" | sed 's~https://~~') -b ${{ github.event.inputs.KERNEL_BRANCH }} ${{ github.workspace }}/kernel
 
-          # 2. Setup Modules
-          rm -rf ${{ github.workspace }}/kernel/modules/qcom/opensource/mm-drivers
-          git clone --single-branch --depth=1 --no-tags https://$(printf %s "${{ secrets.KERNEL_USERNAME }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))'):$(printf %s "${{ secrets.KERNEL_TOKEN }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))')@$(echo "${{ github.event.inputs.MODULES_SOURCE }}" | sed 's~https://~~') -b ${{ github.event.inputs.MODULES_BRANCH }} ${{ github.workspace }}/kernel/modules/qcom/opensource/mm-drivers
+          # 2. Setup Modules (Cloned independently, NOT inside a specific driver folder)
+          rm -rf ${{ github.workspace }}/sm6475-modules
+          git clone --single-branch --depth=1 --no-tags https://$(printf %s "${{ secrets.KERNEL_USERNAME }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))'):$(printf %s "${{ secrets.KERNEL_TOKEN }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))')@$(echo "${{ github.event.inputs.MODULES_SOURCE }}" | sed 's~https://~~') -b ${{ github.event.inputs.MODULES_BRANCH }} ${{ github.workspace }}/sm6475-modules
 
           # 3. Setup Device Trees
           rm -rf ${{ github.workspace }}/kernel/arch/arm64/boot/dts/vendor
@@ -124,6 +124,7 @@ jobs:
          }
          
          compile() {       
+            # Build main kernel & dtbs
             make -j$(nproc --all) \
             O=${{ env.OBJDIR }} \
             ARCH=arm64 \
@@ -139,27 +140,25 @@ jobs:
             NM=llvm-nm \
             LLVM=1 \
             LLVM_IAS=1 \
-            dtbs modules
+            dtbs modules Image.gz
 
-            # Explicitly build the out-of-tree modules for Samsung/GKI
-            if [ -d "modules/qcom/opensource/mm-drivers" ]; then
-                echo "Building out-of-tree modules..."
-                make -j$(nproc --all) \
-                O=${{ env.OBJDIR }} \
-                ARCH=arm64 \
-                CC=clang \
-                KCFLAGS="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types" \
-                CROSS_COMPILE=aarch64-linux-gnu- \
-                CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-                CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
-                AR=llvm-ar \
-                LLVM_NM=llvm-nm \
-                OBJCOPY=llvm-objcopy \
-                LD=ld.lld \
-                NM=llvm-nm \
-                LLVM=1 \
-                LLVM_IAS=1 \
-                M=modules/qcom/opensource/mm-drivers modules || echo "Warning: Out-of-tree modules build failed, continuing..."
+            # Build out-of-tree modules
+            MODULES_DIR="${{ github.workspace }}/sm6475-modules"
+            
+            # 1. Build NXP NFC Driver
+            if [ -d "${MODULES_DIR}/nxp/opensource/driver" ]; then
+                echo "Building NXP Modules..."
+                make -j$(nproc --all) O=${{ env.OBJDIR }} ARCH=arm64 CC=clang KCFLAGS="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types" CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- AR=llvm-ar LLVM_NM=llvm-nm OBJCOPY=llvm-objcopy LD=ld.lld NM=llvm-nm LLVM=1 LLVM_IAS=1 M=${MODULES_DIR}/nxp/opensource/driver modules || echo "Warning: NXP modules build failed"
+            fi
+
+            # 2. Build QCOM Drivers (Iterating through all subfolders like audio-kernel, wlan, etc.)
+            if [ -d "${MODULES_DIR}/qcom/opensource" ]; then
+                for mod in ${MODULES_DIR}/qcom/opensource/*; do
+                    if [ -d "$mod" ]; then
+                        echo "Building QCOM module: $(basename $mod)"
+                        make -j$(nproc --all) O=${{ env.OBJDIR }} ARCH=arm64 CC=clang KCFLAGS="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types" CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- AR=llvm-ar LLVM_NM=llvm-nm OBJCOPY=llvm-objcopy LD=ld.lld NM=llvm-nm LLVM=1 LLVM_IAS=1 M=$mod modules || echo "Warning: $(basename $mod) build failed"
+                    fi
+                done
             fi
          }
 
@@ -183,7 +182,7 @@ jobs:
          compiled_dtb_img="arch/arm64/boot/dtb.img"
          compiled_dtb="arch/arm64/boot/dtb"
            
-         if [[ -f "${compiled_image}" || -f "${compiled_gz_image}" || -f "${compiled_gz_dtb}" || -f "${compiled_dtbo}" || -f "${compiled_dtb_img}" || -n "$(find ${{ github.workspace }}/kernel -name '*.ko' -print -quit)" ]]; then
+         if [[ -f "${compiled_image}" || -f "${compiled_gz_image}" || -f "${compiled_gz_dtb}" || -f "${compiled_dtbo}" || -f "${compiled_dtb_img}" || -n "$(find ${{ github.workspace }}/sm6475-modules -name '*.ko' -print -quit)" ]]; then
               git clone -q ${{ github.event.inputs.ANYKERNEL }} "${{ env.ANYKERNEL }}"
 
               if [[ -f "${compiled_image}" ]]; then
@@ -214,9 +213,10 @@ jobs:
                   cp -f "${compiled_dtb}" "${{ env.OUTPUT_DIR }}/dtb" || true
               fi
 
-              # Copy vendor modules into AnyKernel modules directory if present
+              # Copy ALL compiled vendor modules (.ko) from both the kernel tree and the external modules folder
               mkdir -p "${{ env.ANYKERNEL }}/modules/system/lib/modules"
               find ${{ github.workspace }}/kernel -name "*.ko" -exec cp -f {} "${{ env.ANYKERNEL }}/modules/system/lib/modules/" \; 2>/dev/null || true
+              find ${{ github.workspace }}/sm6475-modules -name "*.ko" -exec cp -f {} "${{ env.ANYKERNEL }}/modules/system/lib/modules/" \; 2>/dev/null || true
 
               cd "${{ env.ANYKERNEL }}"
               zip -r AnyKernel.zip *
