@@ -114,7 +114,7 @@ jobs:
       - name: Start Compilation
         continue-on-error: false
         run: |
-          set -e # Exit immediately if a command exits with a non-zero status
+          set -e
           mkdir -p ${{ env.OUTPUT_DIR }}
           cd ${{ github.workspace }}/kernel
           
@@ -150,11 +150,22 @@ jobs:
           echo "3. Building Out-of-Tree Modules (sm6475-modules)"
           echo "=============================================="
           MODULES_DIR="${{ github.workspace }}/sm6475-modules"
+          KERNEL_DIR="${{ github.workspace }}/kernel"
           
           # Build NXP NFC Driver
           if [ -d "${MODULES_DIR}/nxp/opensource/driver" ]; then
               echo "--> Building NXP Modules..."
-              make -j$(nproc --all) O=${{ env.OBJDIR }} ROOT_DIR=${MODULES_DIR}/nxp/opensource/driver KERNEL_SRC=${{ github.workspace }}/kernel ARCH=arm64 CC=clang KCFLAGS="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types" CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- AR=llvm-ar LLVM_NM=llvm-nm OBJCOPY=llvm-objcopy LD=ld.lld NM=llvm-nm LLVM=1 LLVM_IAS=1 M=${MODULES_DIR}/nxp/opensource/driver modules
+              NXP_PATH="${MODULES_DIR}/nxp/opensource/driver"
+              make -C ${KERNEL_DIR} -j$(nproc --all) \
+              O=${{ env.OBJDIR }} \
+              M=${NXP_PATH} \
+              ROOT_DIR=${NXP_PATH} \
+              NXP_DIR=${NXP_PATH} \
+              KERNEL_SRC=${KERNEL_DIR} \
+              ARCH=arm64 CC=clang \
+              KCFLAGS="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types" \
+              CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+              AR=llvm-ar LLVM_NM=llvm-nm OBJCOPY=llvm-objcopy LD=ld.lld NM=llvm-nm LLVM=1 LLVM_IAS=1 modules
           else
               echo "--> WARNING: NXP directory not found!"
           fi
@@ -162,10 +173,17 @@ jobs:
           # Build QCOM Drivers
           if [ -d "${MODULES_DIR}/qcom/opensource" ]; then
               for mod in ${MODULES_DIR}/qcom/opensource/*; do
-                  # Verify directory contains Kbuild or Makefile to avoid build errors
                   if [ -d "$mod" ] && { [ -f "$mod/Kbuild" ] || [ -f "$mod/Makefile" ]; }; then
                       echo "--> Building QCOM module: $(basename $mod)"
-                      make -j$(nproc --all) O=${{ env.OBJDIR }} ROOT_DIR=$mod KERNEL_SRC=${{ github.workspace }}/kernel ARCH=arm64 CC=clang KCFLAGS="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types" CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- AR=llvm-ar LLVM_NM=llvm-nm OBJCOPY=llvm-objcopy LD=ld.lld NM=llvm-nm LLVM=1 LLVM_IAS=1 M=$mod modules
+                      make -C ${KERNEL_DIR} -j$(nproc --all) \
+                      O=${{ env.OBJDIR }} \
+                      M=$mod \
+                      ROOT_DIR=$mod \
+                      KERNEL_SRC=${KERNEL_DIR} \
+                      ARCH=arm64 CC=clang \
+                      KCFLAGS="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types" \
+                      CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+                      AR=llvm-ar LLVM_NM=llvm-nm OBJCOPY=llvm-objcopy LD=ld.lld NM=llvm-nm LLVM=1 LLVM_IAS=1 modules
                   fi
               done
           else
@@ -180,7 +198,6 @@ jobs:
         run: |
           cd "${{ env.OBJDIR }}"
           
-          # Print contents of the boot directory to verify files exist
           echo "Checking contents of arch/arm64/boot/ :"
           ls -la arch/arm64/boot/ || echo "boot directory not found!"
           
@@ -203,7 +220,6 @@ jobs:
                    cp -f "${compiled_gz_dtb}" "${{ env.ANYKERNEL }}/Image.gz-dtb" || true
                fi
                
-               # Copy DTBO & DTB
                find arch/arm64/boot/dts/ -name "*.dtbo" -exec cp -f {} "${{ env.ANYKERNEL }}/" \; 2>/dev/null || true
                find arch/arm64/boot/dts/ -name "*.dtb" -exec cp -f {} "${{ env.ANYKERNEL }}/" \; 2>/dev/null || true
 
@@ -217,7 +233,6 @@ jobs:
                    cp -f "${compiled_dtb}" "${{ env.ANYKERNEL }}/dtb" || true
                fi
 
-               # Collect all compiled modules (.ko) from both the build path and external modules directory
                echo "Gathering compiled .ko modules..."
                mkdir -p "${{ env.ANYKERNEL }}/modules/system/lib/modules"
                find ${{ env.OBJDIR }} -name "*.ko" -exec cp -f {} "${{ env.ANYKERNEL }}/modules/system/lib/modules/" \; 2>/dev/null || true
