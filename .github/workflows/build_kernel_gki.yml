@@ -140,6 +140,27 @@ jobs:
             LLVM=1 \
             LLVM_IAS=1 \
             dtbs modules
+
+            # Explicitly build the out-of-tree modules for Samsung/GKI
+            if [ -d "modules/qcom/opensource/mm-drivers" ]; then
+                echo "Building out-of-tree modules..."
+                make -j$(nproc --all) \
+                O=${{ env.OBJDIR }} \
+                ARCH=arm64 \
+                CC=clang \
+                KCFLAGS="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types" \
+                CROSS_COMPILE=aarch64-linux-gnu- \
+                CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+                CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+                AR=llvm-ar \
+                LLVM_NM=llvm-nm \
+                OBJCOPY=llvm-objcopy \
+                LD=ld.lld \
+                NM=llvm-nm \
+                LLVM=1 \
+                LLVM_IAS=1 \
+                M=modules/qcom/opensource/mm-drivers modules || echo "Warning: Out-of-tree modules build failed, continuing..."
+            fi
          }
 
          make_defconfig
@@ -162,7 +183,7 @@ jobs:
          compiled_dtb_img="arch/arm64/boot/dtb.img"
          compiled_dtb="arch/arm64/boot/dtb"
            
-         if [[ -f ${compiled_image} || -f ${compiled_gz_image} || -f ${compiled_gz_dtb} ]]; then
+         if [[ -f "${compiled_image}" || -f "${compiled_gz_image}" || -f "${compiled_gz_dtb}" || -f "${compiled_dtbo}" || -f "${compiled_dtb_img}" || -n "$(find ${{ github.workspace }}/kernel -name '*.ko' -print -quit)" ]]; then
               git clone -q ${{ github.event.inputs.ANYKERNEL }} "${{ env.ANYKERNEL }}"
 
               if [[ -f "${compiled_image}" ]]; then
@@ -195,7 +216,7 @@ jobs:
 
               # Copy vendor modules into AnyKernel modules directory if present
               mkdir -p "${{ env.ANYKERNEL }}/modules/system/lib/modules"
-              find . -name "*.ko" -exec cp -f {} "${{ env.ANYKERNEL }}/modules/system/lib/modules/" \; 2>/dev/null || true
+              find ${{ github.workspace }}/kernel -name "*.ko" -exec cp -f {} "${{ env.ANYKERNEL }}/modules/system/lib/modules/" \; 2>/dev/null || true
 
               cd "${{ env.ANYKERNEL }}"
               zip -r AnyKernel.zip *
@@ -203,7 +224,7 @@ jobs:
               mv -- "${{ env.ANYKERNEL }}/${{ env.ZIP_NAME }}" "${{ env.OUTPUT_DIR }}/${{ env.ZIP_NAME }}"
               rm -rf "${{ env.ANYKERNEL }}"
          else
-              echo "ERROR: Some output is missing!"
+              echo "ERROR: Some output is missing (No Image, dtbo, or .ko files found)!"
               exit 1
          fi
          
