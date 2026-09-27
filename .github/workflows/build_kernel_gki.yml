@@ -154,7 +154,7 @@ jobs:
           # Build NXP NFC Driver
           if [ -d "${MODULES_DIR}/nxp/opensource/driver" ]; then
               echo "--> Building NXP Modules..."
-              make -j$(nproc --all) O=${{ env.OBJDIR }} KERNEL_SRC=${{ github.workspace }}/kernel ARCH=arm64 CC=clang KCFLAGS="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types" CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- AR=llvm-ar LLVM_NM=llvm-nm OBJCOPY=llvm-objcopy LD=ld.lld NM=llvm-nm LLVM=1 LLVM_IAS=1 M=${MODULES_DIR}/nxp/opensource/driver modules
+              make -j$(nproc --all) O=${{ env.OBJDIR }} ROOT_DIR=${MODULES_DIR}/nxp/opensource/driver KERNEL_SRC=${{ github.workspace }}/kernel ARCH=arm64 CC=clang KCFLAGS="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types" CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- AR=llvm-ar LLVM_NM=llvm-nm OBJCOPY=llvm-objcopy LD=ld.lld NM=llvm-nm LLVM=1 LLVM_IAS=1 M=${MODULES_DIR}/nxp/opensource/driver modules
           else
               echo "--> WARNING: NXP directory not found!"
           fi
@@ -165,7 +165,7 @@ jobs:
                   # Verify directory contains Kbuild or Makefile to avoid build errors
                   if [ -d "$mod" ] && { [ -f "$mod/Kbuild" ] || [ -f "$mod/Makefile" ]; }; then
                       echo "--> Building QCOM module: $(basename $mod)"
-                      make -j$(nproc --all) O=${{ env.OBJDIR }} KERNEL_SRC=${{ github.workspace }}/kernel ARCH=arm64 CC=clang KCFLAGS="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types" CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- AR=llvm-ar LLVM_NM=llvm-nm OBJCOPY=llvm-objcopy LD=ld.lld NM=llvm-nm LLVM=1 LLVM_IAS=1 M=$mod modules
+                      make -j$(nproc --all) O=${{ env.OBJDIR }} ROOT_DIR=$mod KERNEL_SRC=${{ github.workspace }}/kernel ARCH=arm64 CC=clang KCFLAGS="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types" CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- AR=llvm-ar LLVM_NM=llvm-nm OBJCOPY=llvm-objcopy LD=ld.lld NM=llvm-nm LLVM=1 LLVM_IAS=1 M=$mod modules
                   fi
               done
           else
