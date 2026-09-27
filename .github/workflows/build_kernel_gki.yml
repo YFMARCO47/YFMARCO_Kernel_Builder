@@ -46,7 +46,7 @@ on:
       ANYKERNEL:
         description: "Clone URL of your AnyKernel"
         required: true
-        default: 'https://github.com/YFMARCO-Dev/AnyKernel3.git -b master'
+        default: 'https://github.com/YFMARCO-Dev/AnyKernel3.git -b spider-a36xq'
 
 jobs:
   Build:
@@ -67,16 +67,16 @@ jobs:
           sudo apt-get install -y curl git ftp lftp wget libarchive-tools ccache python-is-python3
           sudo apt-get install -y zip unzip tar gzip bzip2 rar unrar cpio jq device-tree-compiler
 
-      - name: Cloning Kernel Source
+      - name: Cloning Sources (Kernel, Modules, DTBs)
         run: |
           # 1. Clone Kernel
           git clone --single-branch --depth=1 --no-tags https://$(printf %s "${{ secrets.KERNEL_USERNAME }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))'):$(printf %s "${{ secrets.KERNEL_TOKEN }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))')@$(echo "${{ github.event.inputs.KERNEL_SOURCE }}" | sed 's~https://~~') -b ${{ github.event.inputs.KERNEL_BRANCH }} ${{ github.workspace }}/kernel
 
-          # 2. Setup Modules (Cloned independently, NOT inside a specific driver folder)
+          # 2. Clone External Modules
           rm -rf ${{ github.workspace }}/sm6475-modules
           git clone --single-branch --depth=1 --no-tags https://$(printf %s "${{ secrets.KERNEL_USERNAME }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))'):$(printf %s "${{ secrets.KERNEL_TOKEN }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))')@$(echo "${{ github.event.inputs.MODULES_SOURCE }}" | sed 's~https://~~') -b ${{ github.event.inputs.MODULES_BRANCH }} ${{ github.workspace }}/sm6475-modules
 
-          # 3. Setup Device Trees
+          # 3. Clone Device Trees
           rm -rf ${{ github.workspace }}/kernel/arch/arm64/boot/dts/vendor
           git clone --single-branch --depth=1 --no-tags https://$(printf %s "${{ secrets.KERNEL_USERNAME }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))'):$(printf %s "${{ secrets.KERNEL_TOKEN }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))')@$(echo "${{ github.event.inputs.DEVICETREES_SOURCE }}" | sed 's~https://~~') -b ${{ github.event.inputs.DEVICETREES_BRANCH }} ${{ github.workspace }}/kernel/arch/arm64/boot/dts/vendor
 
@@ -113,57 +113,63 @@ jobs:
 
       - name: Start Compilation
         run: |
+         set -e # Exit immediately if a command exits with a non-zero status
          mkdir -p ${{ env.OUTPUT_DIR }}
          cd ${{ github.workspace }}/kernel
          
          export PATH="${{ env.CLANG_DIR }}/bin:$PATH"
          start=$(date +"%s")
          
-         make_defconfig() {
-            make -s ARCH=arm64 O=${{ env.OBJDIR }} ${{ github.event.inputs.CONFIG_FILE }} -j$(nproc --all)
-         }
+         echo "=============================================="
+         echo "1. Generating Defconfig"
+         echo "=============================================="
+         make -s ARCH=arm64 O=${{ env.OBJDIR }} ${{ github.event.inputs.CONFIG_FILE }} -j$(nproc --all)
          
-         compile() {       
-            # Build main kernel & dtbs
-            make -j$(nproc --all) \
-            O=${{ env.OBJDIR }} \
-            ARCH=arm64 \
-            CC=clang \
-            KCFLAGS="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types" \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
-            AR=llvm-ar \
-            LLVM_NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            LD=ld.lld \
-            NM=llvm-nm \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            dtbs modules Image.gz
+         echo "=============================================="
+         echo "2. Building Main Kernel & Internal Modules"
+         echo "=============================================="
+         make -j$(nproc --all) \
+         O=${{ env.OBJDIR }} \
+         ARCH=arm64 \
+         CC=clang \
+         KCFLAGS="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types" \
+         CROSS_COMPILE=aarch64-linux-gnu- \
+         CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+         CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+         AR=llvm-ar \
+         LLVM_NM=llvm-nm \
+         OBJCOPY=llvm-objcopy \
+         LD=ld.lld \
+         NM=llvm-nm \
+         LLVM=1 \
+         LLVM_IAS=1 \
+         dtbs modules Image.gz
 
-            # Build out-of-tree modules
-            MODULES_DIR="${{ github.workspace }}/sm6475-modules"
-            
-            # 1. Build NXP NFC Driver
-            if [ -d "${MODULES_DIR}/nxp/opensource/driver" ]; then
-                echo "Building NXP Modules..."
-                make -j$(nproc --all) O=${{ env.OBJDIR }} ARCH=arm64 CC=clang KCFLAGS="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types" CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- AR=llvm-ar LLVM_NM=llvm-nm OBJCOPY=llvm-objcopy LD=ld.lld NM=llvm-nm LLVM=1 LLVM_IAS=1 M=${MODULES_DIR}/nxp/opensource/driver modules || echo "Warning: NXP modules build failed"
-            fi
+         echo "=============================================="
+         echo "3. Building Out-of-Tree Modules (sm6475-modules)"
+         echo "=============================================="
+         MODULES_DIR="${{ github.workspace }}/sm6475-modules"
+         
+         # Build NXP NFC Driver
+         if [ -d "${MODULES_DIR}/nxp/opensource/driver" ]; then
+             echo "--> Building NXP Modules..."
+             make -j$(nproc --all) O=${{ env.OBJDIR }} ARCH=arm64 CC=clang KCFLAGS="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types" CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- AR=llvm-ar LLVM_NM=llvm-nm OBJCOPY=llvm-objcopy LD=ld.lld NM=llvm-nm LLVM=1 LLVM_IAS=1 M=${MODULES_DIR}/nxp/opensource/driver modules
+         else
+             echo "--> WARNING: NXP directory not found!"
+         fi
 
-            # 2. Build QCOM Drivers (Iterating through all subfolders like audio-kernel, wlan, etc.)
-            if [ -d "${MODULES_DIR}/qcom/opensource" ]; then
-                for mod in ${MODULES_DIR}/qcom/opensource/*; do
-                    if [ -d "$mod" ]; then
-                        echo "Building QCOM module: $(basename $mod)"
-                        make -j$(nproc --all) O=${{ env.OBJDIR }} ARCH=arm64 CC=clang KCFLAGS="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types" CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- AR=llvm-ar LLVM_NM=llvm-nm OBJCOPY=llvm-objcopy LD=ld.lld NM=llvm-nm LLVM=1 LLVM_IAS=1 M=$mod modules || echo "Warning: $(basename $mod) build failed"
-                    fi
-                done
-            fi
-         }
-
-         make_defconfig
-         compile
+         # Build QCOM Drivers
+         if [ -d "${MODULES_DIR}/qcom/opensource" ]; then
+             for mod in ${MODULES_DIR}/qcom/opensource/*; do
+                 # Verify directory contains Kbuild or Makefile to avoid build errors
+                 if [ -d "$mod" ] && { [ -f "$mod/Kbuild" ] || [ -f "$mod/Makefile" ]; }; then
+                     echo "--> Building QCOM module: $(basename $mod)"
+                     make -j$(nproc --all) O=${{ env.OBJDIR }} ARCH=arm64 CC=clang KCFLAGS="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types" CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- AR=llvm-ar LLVM_NM=llvm-nm OBJCOPY=llvm-objcopy LD=ld.lld NM=llvm-nm LLVM=1 LLVM_IAS=1 M=$mod modules
+                 fi
+             done
+         else
+             echo "--> WARNING: QCOM directory not found!"
+         fi
 
          end=$(date +"%s")
          diff=$((end - start))
@@ -171,9 +177,13 @@ jobs:
 
         continue-on-error: false
 
-      - name: Checking for outputs
+      - name: Checking for outputs and Packing AnyKernel
         run: |
          cd "${{ env.OBJDIR }}"
+         
+         # Print contents of the boot directory to verify files exist
+         echo "Checking contents of arch/arm64/boot/ :"
+         ls -la arch/arm64/boot/ || echo "boot directory not found!"
          
          compiled_image="arch/arm64/boot/Image"
          compiled_gz_image="arch/arm64/boot/Image.gz"
@@ -182,40 +192,36 @@ jobs:
          compiled_dtb_img="arch/arm64/boot/dtb.img"
          compiled_dtb="arch/arm64/boot/dtb"
            
-         if [[ -f "${compiled_image}" || -f "${compiled_gz_image}" || -f "${compiled_gz_dtb}" || -f "${compiled_dtbo}" || -f "${compiled_dtb_img}" || -n "$(find ${{ github.workspace }}/sm6475-modules -name '*.ko' -print -quit)" ]]; then
+         if [[ -f "${compiled_image}" || -f "${compiled_gz_image}" || -f "${compiled_gz_dtb}" ]]; then
+              echo "Kernel output found! Preparing AnyKernel..."
               git clone -q ${{ github.event.inputs.ANYKERNEL }} "${{ env.ANYKERNEL }}"
 
               if [[ -f "${compiled_image}" ]]; then
                   cp -f "${compiled_image}" "${{ env.ANYKERNEL }}/Image" || true
-                  cp -f "${compiled_image}" "${{ env.OUTPUT_DIR }}/Image" || true
               elif [[ -f "${compiled_gz_image}" ]]; then
                   cp -f "${compiled_gz_image}" "${{ env.ANYKERNEL }}/Image.gz" || true
-                  cp -f "${compiled_gz_image}" "${{ env.OUTPUT_DIR }}/Image.gz" || true
               elif [[ -f "${compiled_gz_dtb}" ]]; then
                   cp -f "${compiled_gz_dtb}" "${{ env.ANYKERNEL }}/Image.gz-dtb" || true
-                  cp -f "${compiled_gz_dtb}" "${{ env.OUTPUT_DIR }}/Image.gz-dtb" || true
               fi
               
-              # Copy DTBO & DTB if compiled
+              # Copy DTBO & DTB
               find arch/arm64/boot/dts/ -name "*.dtbo" -exec cp -f {} "${{ env.ANYKERNEL }}/" \; 2>/dev/null || true
               find arch/arm64/boot/dts/ -name "*.dtb" -exec cp -f {} "${{ env.ANYKERNEL }}/" \; 2>/dev/null || true
 
               if [[ -f "${compiled_dtbo}" ]]; then
                   cp -f "${compiled_dtbo}" "${{ env.ANYKERNEL }}/dtbo.img" || true
-                  cp -f "${compiled_dtbo}" "${{ env.OUTPUT_DIR }}/dtbo.img" || true
               fi
  
               if [[ -f "${compiled_dtb_img}" ]]; then
                   cp -f "${compiled_dtb_img}" "${{ env.ANYKERNEL }}/dtb.img" || true
-                  cp -f "${compiled_dtb_img}" "${{ env.OUTPUT_DIR }}/dtb.img" || true
               elif [[ -f "${compiled_dtb}" ]]; then
                   cp -f "${compiled_dtb}" "${{ env.ANYKERNEL }}/dtb" || true
-                  cp -f "${compiled_dtb}" "${{ env.OUTPUT_DIR }}/dtb" || true
               fi
 
-              # Copy ALL compiled vendor modules (.ko) from both the kernel tree and the external modules folder
+              # Collect all compiled modules (.ko) from both the build path and external modules directory
+              echo "Gathering compiled .ko modules..."
               mkdir -p "${{ env.ANYKERNEL }}/modules/system/lib/modules"
-              find ${{ github.workspace }}/kernel -name "*.ko" -exec cp -f {} "${{ env.ANYKERNEL }}/modules/system/lib/modules/" \; 2>/dev/null || true
+              find ${{ env.OBJDIR }} -name "*.ko" -exec cp -f {} "${{ env.ANYKERNEL }}/modules/system/lib/modules/" \; 2>/dev/null || true
               find ${{ github.workspace }}/sm6475-modules -name "*.ko" -exec cp -f {} "${{ env.ANYKERNEL }}/modules/system/lib/modules/" \; 2>/dev/null || true
 
               cd "${{ env.ANYKERNEL }}"
@@ -224,7 +230,7 @@ jobs:
               mv -- "${{ env.ANYKERNEL }}/${{ env.ZIP_NAME }}" "${{ env.OUTPUT_DIR }}/${{ env.ZIP_NAME }}"
               rm -rf "${{ env.ANYKERNEL }}"
          else
-              echo "ERROR: Some output is missing (No Image, dtbo, or .ko files found)!"
+              echo "ERROR: Kernel Image not found in arch/arm64/boot/!"
               exit 1
          fi
          
