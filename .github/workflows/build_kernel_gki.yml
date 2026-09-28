@@ -69,10 +69,10 @@ jobs:
 
       - name: Cloning Sources (Kernel, Modules, DTBs)
         run: |
-          # 1. Clone Kernel
+          # 1. Clone Kernel to 'kernel'
           git clone --single-branch --depth=1 --no-tags https://$(printf %s "${{ secrets.KERNEL_USERNAME }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))'):$(printf %s "${{ secrets.KERNEL_TOKEN }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))')@$(echo "${{ github.event.inputs.KERNEL_SOURCE }}" | sed 's~https://~~') -b ${{ github.event.inputs.KERNEL_BRANCH }} ${{ github.workspace }}/kernel
 
-          # 2. Clone External Modules
+          # 2. Clone External Modules to 'sm6475-modules' (Matching ext-mod-dir relative position next to kernel)
           rm -rf ${{ github.workspace }}/sm6475-modules
           git clone --single-branch --depth=1 --no-tags https://$(printf %s "${{ secrets.KERNEL_USERNAME }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))'):$(printf %s "${{ secrets.KERNEL_TOKEN }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))')@$(echo "${{ github.event.inputs.MODULES_SOURCE }}" | sed 's~https://~~') -b ${{ github.event.inputs.MODULES_BRANCH }} ${{ github.workspace }}/sm6475-modules
 
@@ -127,7 +127,7 @@ jobs:
           make -s ARCH=arm64 O=${{ env.OBJDIR }} ${{ github.event.inputs.CONFIG_FILE }} -j$(nproc --all)
           
           echo "=============================================="
-          echo "2. Building Main Kernel & Internal Modules"
+          echo "2. Building Kernel, DTBs & External Modules via Makefile"
           echo "=============================================="
           make -j$(nproc --all) \
           O=${{ env.OBJDIR }} \
@@ -145,50 +145,6 @@ jobs:
           LLVM=1 \
           LLVM_IAS=1 \
           dtbs modules Image.gz
-
-          echo "=============================================="
-          echo "3. Building Out-of-Tree Modules (sm6475-modules)"
-          echo "=============================================="
-          MODULES_DIR="${{ github.workspace }}/sm6475-modules"
-          KERNEL_DIR="${{ github.workspace }}/kernel"
-          
-          # Build NXP NFC Driver
-          if [ -d "${MODULES_DIR}/nxp/opensource/driver" ]; then
-              echo "--> Building NXP Modules..."
-              NXP_PATH="${MODULES_DIR}/nxp/opensource/driver"
-              make -C ${KERNEL_DIR} -j$(nproc --all) \
-              O=${{ env.OBJDIR }} \
-              M=${NXP_PATH} \
-              ROOT_DIR=${NXP_PATH} \
-              NXP_DIR=${NXP_PATH} \
-              KERNEL_SRC=${KERNEL_DIR} \
-              ARCH=arm64 CC=clang \
-              KCFLAGS="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types" \
-              CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
-              AR=llvm-ar LLVM_NM=llvm-nm OBJCOPY=llvm-objcopy LD=ld.lld NM=llvm-nm LLVM=1 LLVM_IAS=1 modules
-          else
-              echo "--> WARNING: NXP directory not found!"
-          fi
-
-          # Build QCOM Drivers
-          if [ -d "${MODULES_DIR}/qcom/opensource" ]; then
-              for mod in ${MODULES_DIR}/qcom/opensource/*; do
-                  if [ -d "$mod" ] && { [ -f "$mod/Kbuild" ] || [ -f "$mod/Makefile" ]; }; then
-                      echo "--> Building QCOM module: $(basename $mod)"
-                      make -C ${KERNEL_DIR} -j$(nproc --all) \
-                      O=${{ env.OBJDIR }} \
-                      M=$mod \
-                      ROOT_DIR=$mod \
-                      KERNEL_SRC=${KERNEL_DIR} \
-                      ARCH=arm64 CC=clang \
-                      KCFLAGS="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types" \
-                      CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
-                      AR=llvm-ar LLVM_NM=llvm-nm OBJCOPY=llvm-objcopy LD=ld.lld NM=llvm-nm LLVM=1 LLVM_IAS=1 modules
-                  fi
-              done
-          else
-              echo "--> WARNING: QCOM directory not found!"
-          fi
 
           end=$(date +"%s")
           diff=$((end - start))
