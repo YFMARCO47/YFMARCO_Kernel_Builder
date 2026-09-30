@@ -59,9 +59,11 @@ jobs:
        working-directory: ${{ github.workspace }}
 
     steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
       - name: Set-up environment
         run: |
-          rm -rf ${{ github.workspace }}/*
           sudo apt-get update
           sudo apt-get install -y build-essential bc gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libssl-dev libfl-dev
           sudo apt-get install -y curl git ftp lftp wget libarchive-tools ccache python-is-python3
@@ -69,11 +71,14 @@ jobs:
           
       - name: Cloning Kernel Source
         run: |
+          MODULE_DIRNAME=$(basename "${{ github.event.inputs.MODULES_SOURCE }}" .git)
+          DT_DIRNAME=$(basename "${{ github.event.inputs.DEVICETREES_SOURCE }}" .git)
+          
           git clone --single-branch --depth=1 --no-tags https://$(printf %s "${{ secrets.KERNEL_USERNAME }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))'):$(printf %s "${{ secrets.KERNEL_TOKEN }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))')@$(echo "${{ github.event.inputs.KERNEL_SOURCE }}" | sed 's~https://~~') -b ${{ github.event.inputs.KERNEL_BRANCH }} ${{ github.workspace }}/kernel
 
-          git clone --single-branch --depth=1 --no-tags https://$(printf %s "${{ secrets.KERNEL_USERNAME }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))'):$(printf %s "${{ secrets.KERNEL_TOKEN }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))')@$(echo "${{ github.event.inputs.MODULES_SOURCE }}" | sed 's~https://~~') -b ${{ github.event.inputs.MODULES_BRANCH }} ${{ github.workspace }}/sm6475-modules
+          git clone --single-branch --depth=1 --no-tags https://$(printf %s "${{ secrets.KERNEL_USERNAME }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))'):$(printf %s "${{ secrets.KERNEL_TOKEN }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))')@$(echo "${{ github.event.inputs.MODULES_SOURCE }}" | sed 's~https://~~') -b ${{ github.event.inputs.MODULES_BRANCH }} ${{ github.workspace }}/${MODULE_DIRNAME}
 
-          git clone --single-branch --depth=1 --no-tags https://$(printf %s "${{ secrets.KERNEL_USERNAME }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))'):$(printf %s "${{ secrets.KERNEL_TOKEN }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))')@$(echo "${{ github.event.inputs.DEVICETREES_SOURCE }}" | sed 's~https://~~') -b ${{ github.event.inputs.DEVICETREES_BRANCH }} ${{ github.workspace }}/sm6475-devicetrees
+          git clone --single-branch --depth=1 --no-tags https://$(printf %s "${{ secrets.KERNEL_USERNAME }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))'):$(printf %s "${{ secrets.KERNEL_TOKEN }}" | python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))')@$(echo "${{ github.event.inputs.DEVICETREES_SOURCE }}" | sed 's~https://~~') -b ${{ github.event.inputs.DEVICETREES_BRANCH }} ${{ github.workspace }}/${DT_DIRNAME}
 
           cd ${{ github.workspace }}/kernel
           git submodule update --init --recursive
@@ -132,11 +137,30 @@ jobs:
             LD=ld.lld \
             NM=llvm-nm \
             LLVM=1 \
-            LLVM_IAS=1
+            LLVM_IAS=1 \
+            all dtbs
          }
 
          make_defconfig
          compile
+
+         echo "Generating dtb.img and dtbo.img..."
+         if [ -f "${{ github.workspace }}/scripts/mkdtboimg.py" ]; then
+             DTB_FILES=$(find ${{ env.OBJDIR }} -name "*.dtb" -type f | sort)
+             DTBO_FILES=$(find ${{ env.OBJDIR }} -name "*.dtbo" -type f | sort)
+             
+             if [ -n "$DTB_FILES" ]; then
+                 cat $DTB_FILES > ${{ env.OBJDIR }}/arch/arm64/boot/dtb.img
+                 echo "Successfully generated dtb.img"
+             fi
+             
+             if [ -n "$DTBO_FILES" ]; then
+                 python3 ${{ github.workspace }}/scripts/mkdtboimg.py create ${{ env.OBJDIR }}/arch/arm64/boot/dtbo.img $DTBO_FILES
+                 echo "Successfully generated dtbo.img"
+             fi
+         else
+             echo "WARNING: mkdtboimg.py not found in the scripts directory!"
+         fi
 
          end=$(date +"%s")
          diff=$((end - start))
