@@ -143,6 +143,27 @@ jobs:
             LLVM=1 \
             LLVM_IAS=1 \
             Image Image.gz dtbs modules
+
+            if [ -d "${{ github.workspace }}/sm6475-modules" ]; then
+                make -j$(nproc --all) \
+                O=${{ env.OBJDIR }} \
+                ARCH=arm64 \
+                CC=clang \
+                KCFLAGS="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types" \
+                CROSS_COMPILE=aarch64-linux-gnu- \
+                CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+                CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+                AR=llvm-ar \
+                LLVM_NM=llvm-nm \
+                OBJCOPY=llvm-objcopy \
+                LD=ld.lld \
+                NM=llvm-nm \
+                LLVM=1 \
+                LLVM_IAS=1 \
+                M=sm6475-modules \
+                KBUILD_EXTRA_SYMBOLS="${{ env.OBJDIR }}/Module.symvers" \
+                modules
+            fi
          }
 
          make_defconfig
