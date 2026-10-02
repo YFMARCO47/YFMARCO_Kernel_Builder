@@ -50,7 +50,7 @@ on:
       ANYKERNEL_BRANCH:
         description: "AnyKernel branch"
         required: true
-        default: 'master'
+        default: 'spider-a36xq'
 
 jobs:
   Build:
