@@ -84,6 +84,9 @@ jobs:
           cd ${{ github.workspace }}/kernel
           git submodule update --init --recursive
           
+          ln -sf ../sm6475-modules sm6475-modules
+          ln -sf ../sm6475-devicetrees sm6475-devicetrees
+          
       - name: Set-up Toolchain
         run: |
          mkdir -p ${{ github.workspace }}/toolchain
