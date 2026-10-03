@@ -59,8 +59,8 @@ jobs:
     permissions: write-all
     defaults:
       run:
-       shell: bash
-       working-directory: ${{ github.workspace }}
+        shell: bash
+        working-directory: ${{ github.workspace }}
 
     steps:
       - name: Checkout repository
@@ -84,19 +84,19 @@ jobs:
           cd ${{ github.workspace }}/kernel
           git submodule update --init --recursive
           
-          ln -sf ../sm6475-modules sm6475-modules
-          ln -sf ../sm6475-devicetrees sm6475-devicetrees
+          ln -sf ${{ github.workspace }}/sm6475-modules ${{ github.workspace }}/kernel/sm6475-modules
+          ln -sf ${{ github.workspace }}/sm6475-devicetrees ${{ github.workspace }}/kernel/sm6475-devicetrees
           
       - name: Set-up Toolchain
         run: |
-         mkdir -p ${{ github.workspace }}/toolchain
-         if [[ "${{ github.event.inputs.TOOLCHAIN_URL }}" == *.tar.gz ]]; then
-             wget -O clang-toolchain.tar.gz "${{ github.event.inputs.TOOLCHAIN_URL }}"
-             tar -xzf clang-toolchain.tar.gz -C ${{ github.workspace }}/toolchain
-             rm -f clang-toolchain.tar.gz
-         else
-             git clone --single-branch --depth=1 --no-tags ${{ github.event.inputs.TOOLCHAIN_URL }} ${{ github.workspace }}/toolchain
-         fi
+          mkdir -p ${{ github.workspace }}/toolchain
+          if [[ "${{ github.event.inputs.TOOLCHAIN_URL }}" == *.tar.gz ]]; then
+              wget -O clang-toolchain.tar.gz "${{ github.event.inputs.TOOLCHAIN_URL }}"
+              tar -xzf clang-toolchain.tar.gz -C ${{ github.workspace }}/toolchain
+              rm -f clang-toolchain.tar.gz
+          else
+              git clone --single-branch --depth=1 --no-tags ${{ github.event.inputs.TOOLCHAIN_URL }} ${{ github.workspace }}/toolchain
+          fi
 
       - name: Set environment variables
         run: |
@@ -116,138 +116,140 @@ jobs:
          
       - name: Start Compilation
         run: |
-         mkdir -p ${{ env.OUTPUT_DIR }}
-         cd ${{ github.workspace }}/kernel
-         
-         export PATH="${{ env.CLANG_DIR }}/bin:$PATH"
-         
-         make_defconfig() {
-            start=$(date +"%s")
-            make -s ARCH=arm64 O=${{ env.OBJDIR }} ${{ github.event.inputs.CONFIG_FILE }} -j$(nproc --all)
-         }
-         
-         compile() {
-            make -j$(nproc --all) \
-            O=${{ env.OBJDIR }} \
-            ARCH=arm64 \
-            CC=clang \
-            KCFLAGS="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types" \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
-            AR=llvm-ar \
-            LLVM_NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            LD=ld.lld \
-            NM=llvm-nm \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            Image Image.gz dtbs modules
+          mkdir -p ${{ env.OUTPUT_DIR }}
+          cd ${{ github.workspace }}/kernel
+          
+          export PATH="${{ env.CLANG_DIR }}/bin:$PATH"
+          
+          make_defconfig() {
+             start=$(date +"%s")
+             make -s ARCH=arm64 O=${{ env.OBJDIR }} ${{ github.event.inputs.CONFIG_FILE }} -j$(nproc --all)
+          }
+          
+          compile() {
+             make -j$(nproc --all) \
+             O=${{ env.OBJDIR }} \
+             ARCH=arm64 \
+             CC=clang \
+             KCFLAGS="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types" \
+             CROSS_COMPILE=aarch64-linux-gnu- \
+             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+             CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+             AR=llvm-ar \
+             LLVM_NM=llvm-nm \
+             OBJCOPY=llvm-objcopy \
+             LD=ld.lld \
+             NM=llvm-nm \
+             LLVM=1 \
+             LLVM_IAS=1 \
+             Image Image.gz dtbs modules
 
-            if [ -d "${{ github.workspace }}/kernel/sm6475-modules" ]; then
-                make -j$(nproc --all) \
-                O=${{ env.OBJDIR }} \
-                ARCH=arm64 \
-                CC=clang \
-                KCFLAGS="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types" \
-                CROSS_COMPILE=aarch64-linux-gnu- \
-                CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-                CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
-                AR=llvm-ar \
-                LLVM_NM=llvm-nm \
-                OBJCOPY=llvm-objcopy \
-                LD=ld.lld \
-                NM=llvm-nm \
-                LLVM=1 \
-                LLVM_IAS=1 \
-                M=sm6475-modules \
-                KBUILD_EXTRA_SYMBOLS="${{ env.OBJDIR }}/Module.symvers" \
-                modules
-            fi
-         }
+             if [ -f "${{ github.workspace }}/sm6475-modules/Makefile" ] || [ -f "${{ github.workspace }}/sm6475-modules/Kbuild" ]; then
+                 cd ${{ github.workspace }}/sm6475-modules
+                 make -j$(nproc --all) \
+                 CROS_COMPILE=aarch64-linux-gnu- \
+                 O=${{ env.OBJDIR }} \
+                 ARCH=arm64 \
+                 CC=clang \
+                 KCFLAGS="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types" \
+                 CROSS_COMPILE=aarch64-linux-gnu- \
+                 CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+                 CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+                 AR=llvm-ar \
+                 LLVM_NM=llvm-nm \
+                 OBJCOPY=llvm-objcopy \
+                 LD=ld.lld \
+                 NM=llvm-nm \
+                 LLVM=1 \
+                 LLVM_IAS=1 \
+                 M=$PWD \
+                 KBUILD_EXTRA_SYMBOLS="${{ env.OBJDIR }}/Module.symvers" \
+                 modules
+             fi
+          }
 
-         make_defconfig
-         compile
+          make_defconfig
+          compile
 
-         end=$(date +"%s")
-         diff=$((end - start))
-         echo -e "BUILD COMPLETED IN ${diff} SECONDS"
+          end=$(date +"%s")
+          diff=$((end - start))
+          echo -e "BUILD COMPLETED IN ${diff} SECONDS"
 
         continue-on-error: false
          
       - name: Checking for outputs and packaging
         run: |
-         cd "${{ env.OBJDIR }}"
-         
-         compiled_image="arch/arm64/boot/Image"
-         compiled_gz_image="arch/arm64/boot/Image.gz"
-         compiled_gz_dtb="arch/arm64/boot/Image.gz-dtb"
-           
-         if [[ -f ${compiled_image} || -f ${compiled_gz_image} || -f ${compiled_gz_dtb} ]]; then
-              git clone -q -b ${{ github.event.inputs.ANYKERNEL_BRANCH }} ${{ github.event.inputs.ANYKERNEL }} "${{ env.ANYKERNEL }}"
+          cd "${{ env.OBJDIR }}"
+          
+          compiled_image="arch/arm64/boot/Image"
+          compiled_gz_image="arch/arm64/boot/Image.gz"
+          compiled_gz_dtb="arch/arm64/boot/Image.gz-dtb"
+            
+          if [[ -f ${compiled_image} || -f ${compiled_gz_image} || -f ${compiled_gz_dtb} ]]; then
+               git clone -q -b ${{ github.event.inputs.ANYKERNEL_BRANCH }} ${{ github.event.inputs.ANYKERNEL }} "${{ env.ANYKERNEL }}"
 
-              if [[ -f "${compiled_image}" ]]; then
-                  cp -f "${compiled_image}" "${{ env.ANYKERNEL }}/Image" || true
-                  cp -f "${compiled_image}" "${{ env.OUTPUT_DIR }}/Image" || true
-              elif [[ -f "${compiled_gz_image}" ]]; then
-                  cp -f "${compiled_gz_image}" "${{ env.ANYKERNEL }}/Image.gz" || true
-                  cp -f "${compiled_gz_image}" "${{ env.OUTPUT_DIR }}/Image.gz" || true
-              elif [[ -f "${compiled_gz_dtb}" ]]; then
-                  cp -f "${compiled_gz_dtb}" "${{ env.ANYKERNEL }}/Image.gz-dtb" || true
-                  cp -f "${compiled_gz_dtb}" "${{ env.OUTPUT_DIR }}/Image.gz-dtb" || true
-              fi
-              
-              if ls arch/arm64/boot/dts/vendor/qcom/*.dtbo 1> /dev/null 2>&1; then
-                  python ${{ github.workspace }}/scripts/mkdtboimg.py create arch/arm64/boot/dtbo.img --page_size=4096 arch/arm64/boot/dts/vendor/qcom/*.dtbo
-              elif ls arch/arm64/boot/*.dtbo 1> /dev/null 2>&1; then
-                  python ${{ github.workspace }}/scripts/mkdtboimg.py create arch/arm64/boot/dtbo.img --page_size=4096 arch/arm64/boot/*.dtbo
-              fi
+               if [[ -f "${compiled_image}" ]]; then
+                   cp -f "${compiled_image}" "${{ env.ANYKERNEL }}/Image" || true
+                   cp -f "${compiled_image}" "${{ env.OUTPUT_DIR }}/Image" || true
+               elif [[ -f "${compiled_gz_image}" ]]; then
+                   cp -f "${compiled_gz_image}" "${{ env.ANYKERNEL }}/Image.gz" || true
+                   cp -f "${compiled_gz_image}" "${{ env.OUTPUT_DIR }}/Image.gz" || true
+               elif [[ -f "${compiled_gz_dtb}" ]]; then
+                   cp -f "${compiled_gz_dtb}" "${{ env.ANYKERNEL }}/Image.gz-dtb" || true
+                   cp -f "${compiled_gz_dtb}" "${{ env.OUTPUT_DIR }}/Image.gz-dtb" || true
+               fi
+               
+               if ls arch/arm64/boot/dts/vendor/qcom/*.dtbo 1> /dev/null 2>&1; then
+                   python ${{ github.workspace }}/scripts/mkdtboimg.py create arch/arm64/boot/dtbo.img --page_size=4096 arch/arm64/boot/dts/vendor/qcom/*.dtbo
+               elif ls arch/arm64/boot/*.dtbo 1> /dev/null 2>&1; then
+                   python ${{ github.workspace }}/scripts/mkdtboimg.py create arch/arm64/boot/dtbo.img --page_size=4096 arch/arm64/boot/*.dtbo
+               fi
 
-              if [[ -f "arch/arm64/boot/dtbo.img" ]]; then
-                  cp -f "arch/arm64/boot/dtbo.img" "${{ env.ANYKERNEL }}/dtbo.img" || true
-                  cp -f "arch/arm64/boot/dtbo.img" "${{ env.OUTPUT_DIR }}/dtbo.img" || true
-              fi
+               if [[ -f "arch/arm64/boot/dtbo.img" ]]; then
+                   cp -f "arch/arm64/boot/dtbo.img" "${{ env.ANYKERNEL }}/dtbo.img" || true
+                   cp -f "arch/arm64/boot/dtbo.img" "${{ env.OUTPUT_DIR }}/dtbo.img" || true
+               fi
 
-              if [[ -f "arch/arm64/boot/dtb.img" ]]; then
-                  cp -f "arch/arm64/boot/dtb.img" "${{ env.ANYKERNEL }}/dtb.img" || true
-                  cp -f "arch/arm64/boot/dtb.img" "${{ env.OUTPUT_DIR }}/dtb.img" || true
-              elif [[ -f "arch/arm64/boot/dtb" ]]; then
-                  cp -f "arch/arm64/boot/dtb" "${{ env.ANYKERNEL }}/dtb.img" || true
-                  cp -f "arch/arm64/boot/dtb" "${{ env.OUTPUT_DIR }}/dtb.img" || true
-              else
-                  dtb_dir=""
-                  if ls arch/arm64/boot/dts/vendor/qcom/*.dtb 1> /dev/null 2>&1; then
-                      dtb_dir="arch/arm64/boot/dts/vendor/qcom"
-                  elif ls arch/arm64/boot/dts/*.dtb 1> /dev/null 2>&1; then
-                      dtb_dir="arch/arm64/boot/dts"
-                  fi
+               if [[ -f "arch/arm64/boot/dtb.img" ]]; then
+                   cp -f "arch/arm64/boot/dtb.img" "${{ env.ANYKERNEL }}/dtb.img" || true
+                   cp -f "arch/arm64/boot/dtb.img" "${{ env.OUTPUT_DIR }}/dtb.img" || true
+               elif [[ -f "arch/arm64/boot/dtb" ]]; then
+                   cp -f "arch/arm64/boot/dtb" "${{ env.ANYKERNEL }}/dtb.img" || true
+                   cp -f "arch/arm64/boot/dtb" "${{ env.OUTPUT_DIR }}/dtb.img" || true
+               else
+                   dtb_dir=""
+                   if ls arch/arm64/boot/dts/vendor/qcom/*.dtb 1> /dev/null 2>&1; then
+                       dtb_dir="arch/arm64/boot/dts/vendor/qcom"
+                   elif ls arch/arm64/boot/dts/*.dtb 1> /dev/null 2>&1; then
+                       dtb_dir="arch/arm64/boot/dts"
+                   fi
 
-                  if [[ -n "${dtb_dir}" ]]; then
-                      find "${dtb_dir}" -maxdepth 1 -name "*.dtb" ! -name "*dtbo*" ! -name "*overlay*" -exec cat {} + > arch/arm64/boot/dtb.img
-                      if [[ -s "arch/arm64/boot/dtb.img" ]]; then
-                          cp -f "arch/arm64/boot/dtb.img" "${{ env.ANYKERNEL }}/dtb.img" || true
-                          cp -f "arch/arm64/boot/dtb.img" "${{ env.OUTPUT_DIR }}/dtb.img" || true
-                      fi
-                  fi
-              fi
+                   if [[ -n "${dtb_dir}" ]]; then
+                       find "${dtb_dir}" -maxdepth 1 -name "*.dtb" ! -name "*dtbo*" ! -name "*overlay*" -exec cat {} + > arch/arm64/boot/dtb.img
+                       if [[ -s "arch/arm64/boot/dtb.img" ]]; then
+                           cp -f "arch/arm64/boot/dtb.img" "${{ env.ANYKERNEL }}/dtb.img" || true
+                           cp -f "arch/arm64/boot/dtb.img" "${{ env.OUTPUT_DIR }}/dtb.img" || true
+                       fi
+                   fi
+               fi
 
-              mkdir -p "${{ env.ANYKERNEL }}/modules/system/lib/modules"
-              
-              find "${{ env.OBJDIR }}" "${{ github.workspace }}/sm6475-modules" -name "*.ko" -exec cp {} "${{ env.ANYKERNEL }}/modules/system/lib/modules/" \;
+               mkdir -p "${{ env.ANYKERNEL }}/modules/system/lib/modules"
+               
+               find "${{ env.OBJDIR }}" "${{ github.workspace }}/sm6475-modules" -name "*.ko" -exec cp {} "${{ env.ANYKERNEL }}/modules/system/lib/modules/" \;
 
-              cd "${{ env.ANYKERNEL }}"
-              zip -r AnyKernel.zip *
-              mv -- "AnyKernel.zip" "${{ env.ZIP_NAME }}"
-              mv -- "${{ env.ANYKERNEL }}/${{ env.ZIP_NAME }}" "${{ env.OUTPUT_DIR }}/${{ env.ZIP_NAME }}"
-              rm -rf "${{ env.ANYKERNEL }}"
-         else
-              echo "ERROR: Some output is missing!"
-              exit 1
-         fi
-         
-         zip_file=$(find ${{ env.OUTPUT_DIR }} -name '${{ github.event.inputs.KERNEL_NAME }}*.zip' -print -quit)
-         echo "ZIP_NAME=$(basename "$zip_file" .zip)" >> $GITHUB_ENV
-         echo "RELEASE_DATE=$(date +'%B %-d, %Y %H:%M')" >> $GITHUB_ENV
+               cd "${{ env.ANYKERNEL }}"
+               zip -r AnyKernel.zip *
+               mv -- "AnyKernel.zip" "${{ env.ZIP_NAME }}"
+               mv -- "${{ env.ANYKERNEL }}/${{ env.ZIP_NAME }}" "${{ env.OUTPUT_DIR }}/${{ env.ZIP_NAME }}"
+               rm -rf "${{ env.ANYKERNEL }}"
+          else
+               echo "ERROR: Some output is missing!"
+               exit 1
+          fi
+          
+          zip_file=$(find ${{ env.OUTPUT_DIR }} -name '${{ github.event.inputs.KERNEL_NAME }}*.zip' -print -quit)
+          echo "ZIP_NAME=$(basename "$zip_file" .zip)" >> $GITHUB_ENV
+          echo "RELEASE_DATE=$(date +'%B %-d, %Y %H:%M')" >> $GITHUB_ENV
 
       - name: Upload files to repository releases page
         uses: softprops/action-gh-release@v1
