@@ -144,7 +144,7 @@ jobs:
             LLVM_IAS=1 \
             Image Image.gz dtbs modules
 
-            if [ -d "${{ github.workspace }}/sm6475-modules" ]; then
+            if [ -d "${{ github.workspace }}/kernel/sm6475-modules" ]; then
                 make -j$(nproc --all) \
                 O=${{ env.OBJDIR }} \
                 ARCH=arm64 \
@@ -160,7 +160,7 @@ jobs:
                 NM=llvm-nm \
                 LLVM=1 \
                 LLVM_IAS=1 \
-                M="${{ github.workspace }}/sm6475-modules" \
+                M=sm6475-modules \
                 KBUILD_EXTRA_SYMBOLS="${{ env.OBJDIR }}/Module.symvers" \
                 modules
             fi
