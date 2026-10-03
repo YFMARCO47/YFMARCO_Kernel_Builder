@@ -258,21 +258,55 @@ jobs:
          build_ext_module() {
             local rel="$1"
             local log="$2"
+            local warn_mode="${3:-0}"
             local rc=0
             local mod_path="${MODULES_DIR}/${rel}"
             local m_rel="../${MODULES_DIR_NAME}/${rel}"
+            local warn_args=()
+            if [[ "${warn_mode}" == "1" ]]; then
+               warn_args=(KBUILD_MODPOST_WARN=1)
+            fi
             if [[ -f "${mod_path}/Makefile" ]] && grep -q 'KERNEL_SRC' "${mod_path}/Makefile"; then
                make -j$(nproc --all) -C "${mod_path}" "${MAKE_ARGS[@]}" \
                   KERNEL_SRC="${KERNEL_DIR}" \
                   M="${m_rel}" \
-                  KBUILD_EXTRA_SYMBOLS="${extra_symbols}" 2>&1 | tee "${log}" || rc=${PIPESTATUS[0]}
+                  KBUILD_EXTRA_SYMBOLS="${extra_symbols}" \
+                  "${warn_args[@]}" 2>&1 | tee "${log}" || rc=${PIPESTATUS[0]}
             else
                make -j$(nproc --all) -C "${KERNEL_DIR}" "${MAKE_ARGS[@]}" \
                   M="${m_rel}" \
                   KBUILD_EXTRA_SYMBOLS="${extra_symbols}" \
+                  "${warn_args[@]}" \
                   modules 2>&1 | tee "${log}" || rc=${PIPESTATUS[0]}
             fi
             return ${rc}
+         }
+
+         find_kernel_definition() {
+            local sym="$1"
+            local dirs=()
+            local d
+            for d in sound drivers techpack include; do
+               if [[ -d "${KERNEL_DIR}/${d}" ]]; then
+                  dirs+=("${KERNEL_DIR}/${d}")
+               fi
+            done
+            if (( ${#dirs[@]} == 0 )); then
+               return 0
+            fi
+            grep -rlE "EXPORT_SYMBOL[A-Z_]*\([[:space:]]*${sym}[[:space:]]*\)" "${dirs[@]}" --include='*.c' 2>/dev/null | head -n1 || true
+            return 0
+         }
+
+         describe_empty_module() {
+            local rel="$1"
+            local kb="${MODULES_DIR}/${rel}/Kbuild"
+            echo "::warning::${rel} finished but produced no .ko files"
+            if [[ -f "${kb}" ]]; then
+               echo "ARCH CONFIGS REFERENCED BY ${rel}/Kbuild: $(grep -hoE 'CONFIG_ARCH_[A-Z0-9_]+' "${kb}" | sort -u | tr '\n' ' ' || true)"
+            fi
+            echo "ARCH CONFIGS ENABLED IN .config: $(grep -E '^CONFIG_ARCH_[A-Z0-9_]+=y' "${OBJDIR}/.config" | sed 's/=y//' | tr '\n' ' ' || true)"
+            return 0
          }
 
          resolve_mod_dir() {
@@ -303,7 +337,8 @@ jobs:
          ensure_ext_module() {
             local rel="$1"
             local depth="$2"
-            local log syms sym provider providers added attempt missing sv sv_abs sv_rel sv_dir
+            local log syms sym provider providers added attempt missing sv sv_abs sv_rel sv_dir kdef
+            local warn_mode=0
             if [[ -n "${BUILT_MODS[$rel]:-}" ]]; then
                return 0
             fi
@@ -311,14 +346,17 @@ jobs:
                return 1
             fi
             BUILT_MODS[$rel]="pending"
-            for attempt in 1 2 3; do
+            for attempt in 1 2 3 4; do
                log=$(mktemp)
                echo "BUILDING EXTERNAL MODULE ${rel}"
-               if build_ext_module "${rel}" "${log}"; then
+               if build_ext_module "${rel}" "${log}" "${warn_mode}"; then
                   BUILT_MODS[$rel]="done"
                   collect_symvers "${rel}"
+                  if (( warn_mode == 1 )); then
+                     echo "::warning::${rel} was built with unresolved symbols: ${syms}"
+                  fi
                   if [[ -z "$(find "${EXT_OUT_DIR}/${rel}" -name '*.ko' -print -quit 2>/dev/null || true)" ]]; then
-                     echo "::warning::${rel} finished but produced no .ko files"
+                     describe_empty_module "${rel}"
                   fi
                   return 0
                fi
@@ -345,6 +383,10 @@ jobs:
                for sym in ${syms}; do
                   providers=$(find_providers "${sym}" "${rel}")
                   echo "UNDEFINED SYMBOL ${sym} PROVIDERS: ${providers:-not found}"
+                  if [[ -z "${providers}" ]]; then
+                     kdef=$(find_kernel_definition "${sym}")
+                     echo "KERNEL SOURCE EXPORTING ${sym}: ${kdef:-not found}"
+                  fi
                   for provider in ${providers}; do
                      if [[ -z "${BUILT_MODS[$provider]:-}" ]]; then
                         if ensure_ext_module "${provider}" $((depth + 1)); then
@@ -353,6 +395,11 @@ jobs:
                      fi
                   done
                done
+               if (( added == 0 )) && (( warn_mode == 0 )) && [[ -n "${syms}" ]]; then
+                  warn_mode=1
+                  echo "RETRYING ${rel} WITH KBUILD_MODPOST_WARN=1"
+                  continue
+               fi
                if (( added == 0 )); then
                   break
                fi
