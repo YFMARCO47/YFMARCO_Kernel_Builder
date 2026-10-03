@@ -189,7 +189,7 @@ jobs:
          find_provider() {
             local sym="$1"
             local src_file dir
-            src_file=$(grep -rlE "EXPORT_SYMBOL(_GPL)?\(${sym}\)" "${MODULES_DIR}" --include='*.c' 2>/dev/null | head -n1 || true)
+            src_file=$(grep -rlE "EXPORT_SYMBOL[A-Z_]*\([[:space:]]*${sym}[[:space:]]*\)" "${MODULES_DIR}" --include='*.c' 2>/dev/null | head -n1 || true)
             if [[ -z "${src_file}" ]]; then
                return 0
             fi
@@ -201,7 +201,23 @@ jobs:
                fi
                dir=$(dirname "${dir}")
             done
+            dir=$(dirname "${src_file}")
+            while [[ "${dir}" != "${MODULES_DIR}" && "${dir}" != "/" ]]; do
+               if [[ -f "${dir}/Makefile" ]] && grep -qE 'obj-(m|\$)' "${dir}/Makefile"; then
+                  echo "${dir#${MODULES_DIR}/}"
+                  return 0
+               fi
+               dir=$(dirname "${dir}")
+            done
          }
+
+         discover_kbuild_dirs() {
+            find "${MODULES_DIR}" -name Kbuild -not -path '*/.git/*' -printf '%h\n' | sort \
+            | awk 'BEGIN{p=""} { if (p=="" || index($0, p "/") != 1) { print; p=$0 } }' \
+            | sed "s~^${MODULES_DIR}/~~"
+         }
+
+         FALLBACK_DONE=0
 
          build_ext_module() {
             local rel="$1"
@@ -217,15 +233,15 @@ jobs:
          ensure_ext_module() {
             local rel="$1"
             local depth="$2"
-            local log syms sym provider added attempt
+            local log syms sym provider added attempt dir
             if [[ -n "${BUILT_MODS[$rel]:-}" ]]; then
                return 0
             fi
-            if (( depth > 5 )); then
+            if (( depth > 6 )); then
                return 1
             fi
             BUILT_MODS[$rel]="pending"
-            for attempt in 1 2; do
+            for attempt in 1 2 3; do
                log=$(mktemp)
                echo "BUILDING EXTERNAL MODULE ${rel}"
                if build_ext_module "${rel}" "${log}"; then
@@ -237,13 +253,23 @@ jobs:
                syms=$(grep -oE 'ERROR: modpost: "[^"]+"' "${log}" | sed -E 's/.*"([^"]+)"/\1/' | sort -u || true)
                for sym in ${syms}; do
                   provider=$(find_provider "${sym}")
+                  echo "UNDEFINED SYMBOL ${sym} PROVIDER ${provider:-not found}"
                   if [[ -n "${provider}" && "${provider}" != "${rel}" && -z "${BUILT_MODS[$provider]:-}" ]]; then
-                     echo "RESOLVING ${sym} VIA ${provider}"
                      if ensure_ext_module "${provider}" $((depth + 1)); then
                         added=1
                      fi
                   fi
                done
+               if (( added == 0 )) && (( FALLBACK_DONE == 0 )) && [[ -n "${syms}" ]]; then
+                  FALLBACK_DONE=1
+                  echo "NO PROVIDER RESOLVED, BUILDING ALL MODULE DIRECTORIES"
+                  while IFS= read -r dir; do
+                     if [[ -n "${dir}" ]]; then
+                        ensure_ext_module "${dir}" $((depth + 1)) || true
+                     fi
+                  done < <(discover_kbuild_dirs)
+                  added=1
+               fi
                if (( added == 0 )); then
                   break
                fi
