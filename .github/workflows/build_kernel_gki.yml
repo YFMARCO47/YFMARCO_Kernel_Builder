@@ -169,7 +169,7 @@ jobs:
             O=${{ env.OBJDIR }}
             ARCH=arm64
             CC=clang
-            KCFLAGS="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types -Wno-misleading-indentation ${SHIM_FLAGS}"
+            KCFLAGS="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types -Wno-misleading-indentation -Wno-format ${SHIM_FLAGS}"
             CROSS_COMPILE=aarch64-linux-gnu-
             CROSS_COMPILE_ARM32=arm-linux-gnueabi-
             CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
@@ -275,10 +275,35 @@ jobs:
             return ${rc}
          }
 
+         resolve_mod_dir() {
+            local rel="$1"
+            local cur parent base stem cand
+            if [[ -d "${MODULES_DIR}/${rel}" ]]; then
+               cur="${rel}"
+            else
+               parent=$(dirname "${rel}")
+               base=$(basename "${rel}")
+               stem=$(echo "${base}" | sed -E 's/-(kernel|drivers|driver)$//')
+               cand=$(find "${MODULES_DIR}/${parent}" -mindepth 1 -maxdepth 1 -type d -name "${stem}*" 2>/dev/null | sort | head -n1 || true)
+               if [[ -z "${cand}" ]]; then
+                  return 0
+               fi
+               cur="${cand#${MODULES_DIR}/}"
+            fi
+            while [[ ! -f "${MODULES_DIR}/${cur}/Kbuild" && ! -f "${MODULES_DIR}/${cur}/Makefile" ]]; do
+               if [[ "${cur}" != */* ]]; then
+                  return 0
+               fi
+               cur=$(dirname "${cur}")
+            done
+            echo "${cur}"
+            return 0
+         }
+
          ensure_ext_module() {
             local rel="$1"
             local depth="$2"
-            local log syms sym provider providers added attempt
+            local log syms sym provider providers added attempt missing sv sv_abs sv_rel sv_dir
             if [[ -n "${BUILT_MODS[$rel]:-}" ]]; then
                return 0
             fi
@@ -292,9 +317,30 @@ jobs:
                if build_ext_module "${rel}" "${log}"; then
                   BUILT_MODS[$rel]="done"
                   collect_symvers "${rel}"
+                  if [[ -z "$(find "${EXT_OUT_DIR}/${rel}" -name '*.ko' -print -quit 2>/dev/null || true)" ]]; then
+                     echo "::warning::${rel} finished but produced no .ko files"
+                  fi
                   return 0
                fi
                added=0
+               missing=$(grep -oE '[^ ]+/Module\.symvers: No such file or directory' "${log}" | sed -E 's/: No such file or directory$//' | sort -u || true)
+               for sv in ${missing}; do
+                  if [[ "${sv}" == /* ]]; then
+                     sv_abs=$(realpath -m "${sv}")
+                  else
+                     sv_abs=$(realpath -m "${OBJDIR}/${sv}")
+                  fi
+                  if [[ "${sv_abs}" == "${EXT_OUT_DIR}/"* ]]; then
+                     sv_rel=$(dirname "${sv_abs#${EXT_OUT_DIR}/}")
+                     sv_dir=$(resolve_mod_dir "${sv_rel}")
+                     echo "MISSING SYMVERS FROM ${sv_rel} RESOLVED TO ${sv_dir:-not found}"
+                     if [[ -n "${sv_dir}" && "${sv_dir}" != "${rel}" && -z "${BUILT_MODS[$sv_dir]:-}" ]]; then
+                        if ensure_ext_module "${sv_dir}" $((depth + 1)); then
+                           added=1
+                        fi
+                     fi
+                  fi
+               done
                syms=$(grep -oE 'ERROR: modpost: "[^"]+"' "${log}" | sed -E 's/.*"([^"]+)"/\1/' | sort -u || true)
                for sym in ${syms}; do
                   providers=$(find_providers "${sym}" "${rel}")
@@ -316,19 +362,19 @@ jobs:
          }
 
          compile_ext_modules() {
+            local mod_rel mod_resolved
             while IFS= read -r mod_rel; do
-               mod_path="${MODULES_DIR}/${mod_rel}"
-               if [[ ! -d "${mod_path}" ]]; then
-                  echo "SKIPPING ${mod_rel}: directory not found"
+               mod_resolved=$(resolve_mod_dir "${mod_rel}")
+               if [[ -z "${mod_resolved}" ]]; then
+                  echo "SKIPPING ${mod_rel}: no matching module directory"
                   continue
                fi
-               if [[ ! -f "${mod_path}/Makefile" && ! -f "${mod_path}/Kbuild" ]]; then
-                  echo "SKIPPING ${mod_rel}: no Makefile or Kbuild"
-                  continue
+               if [[ "${mod_resolved}" != "${mod_rel}" ]]; then
+                  echo "RESOLVED ${mod_rel} -> ${mod_resolved}"
                fi
-               if ! ensure_ext_module "${mod_rel}" 0; then
-                  FAILED_MODS+=("${mod_rel}")
-                  echo "::warning::failed to build external module ${mod_rel}"
+               if ! ensure_ext_module "${mod_resolved}" 0; then
+                  FAILED_MODS+=("${mod_resolved}")
+                  echo "::warning::failed to build external module ${mod_resolved}"
                fi
             done < <(get_ext_mod_dirs)
 
