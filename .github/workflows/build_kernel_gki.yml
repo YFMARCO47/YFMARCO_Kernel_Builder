@@ -408,8 +408,58 @@ jobs:
             return 1
          }
 
+         module_enabled_by_config() {
+            local rel="$1"
+            local dir="${MODULES_DIR}/${rel}"
+            local tokens token f
+            tokens=$(for f in "${dir}/Kbuild" "${dir}/Makefile"; do
+               if [[ -f "${f}" ]]; then
+                  grep -hoE 'CONFIG_ARCH_[A-Z0-9_]+' "${f}" || true
+               fi
+            done | sort -u)
+            if [[ -z "${tokens}" ]]; then
+               return 0
+            fi
+            for token in ${tokens}; do
+               if grep -qE "^${token}=(y|m)$" "${OBJDIR}/.config"; then
+                  return 0
+               fi
+            done
+            echo "SKIPPING ${rel}: none of $(echo ${tokens}) is enabled in .config"
+            return 1
+         }
+
+         find_wrapper_dir() {
+            local rel="$1"
+            local cur="${rel}"
+            while true; do
+               if [[ -f "${MODULES_DIR}/${cur}/Makefile" ]] && grep -q 'KERNEL_SRC' "${MODULES_DIR}/${cur}/Makefile"; then
+                  echo "${cur}"
+                  return 0
+               fi
+               if [[ "${cur}" != */* ]]; then
+                  break
+               fi
+               cur=$(dirname "${cur}")
+            done
+            echo "${rel}"
+            return 0
+         }
+
+         is_covered() {
+            local c="$1"
+            local k
+            for k in "${!BUILT_MODS[@]}" "${FAILED_MODS[@]}"; do
+               if [[ "${c}" == "${k}" || "${c}" == "${k}/"* || "${k}" == "${c}/"* ]]; then
+                  return 0
+               fi
+            done
+            return 1
+         }
+
          compile_ext_modules() {
-            local mod_rel mod_resolved
+            local mod_rel mod_resolved cand
+            local -a queue=()
             while IFS= read -r mod_rel; do
                mod_resolved=$(resolve_mod_dir "${mod_rel}")
                if [[ -z "${mod_resolved}" ]]; then
@@ -419,14 +469,32 @@ jobs:
                if [[ "${mod_resolved}" != "${mod_rel}" ]]; then
                   echo "RESOLVED ${mod_rel} -> ${mod_resolved}"
                fi
+               queue+=("${mod_resolved}")
+            done < <(get_ext_mod_dirs)
+
+            for cand in "${TOP_DIRS[@]}"; do
+               queue+=("$(find_wrapper_dir "${cand}")")
+            done
+
+            echo "MODULE BUILD QUEUE: ${queue[*]}"
+
+            for mod_resolved in "${queue[@]}"; do
+               if is_covered "${mod_resolved}"; then
+                  continue
+               fi
+               if ! module_enabled_by_config "${mod_resolved}"; then
+                  continue
+               fi
                if ! ensure_ext_module "${mod_resolved}" 0; then
                   FAILED_MODS+=("${mod_resolved}")
                   echo "::warning::failed to build external module ${mod_resolved}"
                fi
-            done < <(get_ext_mod_dirs)
+            done
 
             find "${EXT_OUT_DIR}" "${OBJDIR}" -name "*.ko" -exec llvm-strip --strip-debug {} \;
 
+            echo "EXTERNAL MODULES BUILT: ${!BUILT_MODS[*]}"
+            echo "EXTERNAL .ko FILES: $(find "${EXT_OUT_DIR}" -name '*.ko' | wc -l)"
             if (( ${#FAILED_MODS[@]} > 0 )); then
                echo "FAILED EXTERNAL MODULES: ${FAILED_MODS[*]}"
             fi
