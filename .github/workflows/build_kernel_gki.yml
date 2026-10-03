@@ -185,12 +185,15 @@ jobs:
                fi
                echo "BUILDING EXTERNAL MODULE ${mod_rel}"
                make -j$(nproc --all) -C ${{ github.workspace }}/kernel "${MAKE_ARGS[@]}" \
-                  M="${mod_path}" \
+                  M="../$(basename ${{ env.MODULES_DIR }})/${mod_rel}" \
                   KBUILD_EXTRA_SYMBOLS="${extra_symbols}" \
                   modules
-               if [[ -f "${mod_path}/Module.symvers" ]]; then
-                  extra_symbols="${extra_symbols} ${mod_path}/Module.symvers"
-               fi
+               for symvers in "${mod_path}/Module.symvers" "${{ env.OBJDIR }}/../$(basename ${{ env.MODULES_DIR }})/${mod_rel}/Module.symvers" "${{ env.OBJDIR }}/${mod_rel}/Module.symvers"; do
+                  if [[ -f "${symvers}" ]]; then
+                     extra_symbols="${extra_symbols} $(realpath "${symvers}")"
+                     break
+                  fi
+               done
             done < <(get_ext_mod_dirs)
 
             find "${{ env.MODULES_DIR }}" "${{ env.OBJDIR }}" -name "*.ko" -exec llvm-strip --strip-debug {} \;
