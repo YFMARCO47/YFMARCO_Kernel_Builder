@@ -160,7 +160,7 @@ jobs:
                 NM=llvm-nm \
                 LLVM=1 \
                 LLVM_IAS=1 \
-                M=sm6475-modules \
+                M="${{ github.workspace }}/sm6475-modules" \
                 KBUILD_EXTRA_SYMBOLS="${{ env.OBJDIR }}/Module.symvers" \
                 modules
             fi
