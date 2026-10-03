@@ -171,10 +171,90 @@ jobs:
             | { grep -v '^$' || true; }
          }
 
+         MODULES_DIR_NAME=$(basename "${MODULES_DIR}")
+         declare -A BUILT_MODS
+         extra_symbols=""
+
+         collect_symvers() {
+            local rel="$1"
+            local symvers
+            for symvers in "${MODULES_DIR}/${rel}/Module.symvers" "${OBJDIR}/../${MODULES_DIR_NAME}/${rel}/Module.symvers" "${OBJDIR}/${rel}/Module.symvers"; do
+               if [[ -f "${symvers}" ]]; then
+                  extra_symbols="${extra_symbols} $(realpath "${symvers}")"
+                  break
+               fi
+            done
+         }
+
+         find_provider() {
+            local sym="$1"
+            local src_file dir
+            src_file=$(grep -rlE "EXPORT_SYMBOL(_GPL)?\(${sym}\)" "${MODULES_DIR}" --include='*.c' 2>/dev/null | head -n1 || true)
+            if [[ -z "${src_file}" ]]; then
+               return 0
+            fi
+            dir=$(dirname "${src_file}")
+            while [[ "${dir}" != "${MODULES_DIR}" && "${dir}" != "/" ]]; do
+               if [[ -f "${dir}/Kbuild" ]]; then
+                  echo "${dir#${MODULES_DIR}/}"
+                  return 0
+               fi
+               dir=$(dirname "${dir}")
+            done
+         }
+
+         build_ext_module() {
+            local rel="$1"
+            local log="$2"
+            local rc=0
+            make -j$(nproc --all) -C ${{ github.workspace }}/kernel "${MAKE_ARGS[@]}" \
+               M="../${MODULES_DIR_NAME}/${rel}" \
+               KBUILD_EXTRA_SYMBOLS="${extra_symbols}" \
+               modules 2>&1 | tee "${log}" || rc=${PIPESTATUS[0]}
+            return ${rc}
+         }
+
+         ensure_ext_module() {
+            local rel="$1"
+            local depth="$2"
+            local log syms sym provider added attempt
+            if [[ -n "${BUILT_MODS[$rel]:-}" ]]; then
+               return 0
+            fi
+            if (( depth > 5 )); then
+               return 1
+            fi
+            BUILT_MODS[$rel]="pending"
+            for attempt in 1 2; do
+               log=$(mktemp)
+               echo "BUILDING EXTERNAL MODULE ${rel}"
+               if build_ext_module "${rel}" "${log}"; then
+                  BUILT_MODS[$rel]="done"
+                  collect_symvers "${rel}"
+                  return 0
+               fi
+               added=0
+               syms=$(grep -oE 'ERROR: modpost: "[^"]+"' "${log}" | sed -E 's/.*"([^"]+)"/\1/' | sort -u || true)
+               for sym in ${syms}; do
+                  provider=$(find_provider "${sym}")
+                  if [[ -n "${provider}" && "${provider}" != "${rel}" && -z "${BUILT_MODS[$provider]:-}" ]]; then
+                     echo "RESOLVING ${sym} VIA ${provider}"
+                     if ensure_ext_module "${provider}" $((depth + 1)); then
+                        added=1
+                     fi
+                  fi
+               done
+               if (( added == 0 )); then
+                  break
+               fi
+            done
+            unset 'BUILT_MODS[$rel]'
+            return 1
+         }
+
          compile_ext_modules() {
-            extra_symbols=""
             while IFS= read -r mod_rel; do
-               mod_path="${{ env.MODULES_DIR }}/${mod_rel}"
+               mod_path="${MODULES_DIR}/${mod_rel}"
                if [[ ! -d "${mod_path}" ]]; then
                   echo "SKIPPING ${mod_rel}: directory not found"
                   continue
@@ -183,20 +263,10 @@ jobs:
                   echo "SKIPPING ${mod_rel}: no Makefile or Kbuild"
                   continue
                fi
-               echo "BUILDING EXTERNAL MODULE ${mod_rel}"
-               make -j$(nproc --all) -C ${{ github.workspace }}/kernel "${MAKE_ARGS[@]}" \
-                  M="../$(basename ${{ env.MODULES_DIR }})/${mod_rel}" \
-                  KBUILD_EXTRA_SYMBOLS="${extra_symbols}" \
-                  modules
-               for symvers in "${mod_path}/Module.symvers" "${{ env.OBJDIR }}/../$(basename ${{ env.MODULES_DIR }})/${mod_rel}/Module.symvers" "${{ env.OBJDIR }}/${mod_rel}/Module.symvers"; do
-                  if [[ -f "${symvers}" ]]; then
-                     extra_symbols="${extra_symbols} $(realpath "${symvers}")"
-                     break
-                  fi
-               done
+               ensure_ext_module "${mod_rel}" 0 || { echo "ERROR: failed to build ${mod_rel}"; exit 1; }
             done < <(get_ext_mod_dirs)
 
-            find "${{ env.MODULES_DIR }}" "${{ env.OBJDIR }}" -name "*.ko" -exec llvm-strip --strip-debug {} \;
+            find "${MODULES_DIR}" "${OBJDIR}" -name "*.ko" -exec llvm-strip --strip-debug {} \;
          }
 
          make_defconfig
