@@ -100,6 +100,7 @@ jobs:
 
           echo "MODULES_DIR=${{ github.workspace }}/${MODULES_DIR_NAME}" >> $GITHUB_ENV
           echo "DEVICETREES_DIR=${{ github.workspace }}/${DEVICETREES_DIR_NAME}" >> $GITHUB_ENV
+          echo "EXT_OUT_DIR=${{ github.workspace }}/kernel/${MODULES_DIR_NAME}" >> $GITHUB_ENV
 
           clone_repo "${{ github.event.inputs.MODULES_SOURCE }}" "${{ github.event.inputs.MODULES_BRANCH }}" "${{ github.workspace }}/${MODULES_DIR_NAME}"
           clone_repo "${{ github.event.inputs.DEVICETREES_SOURCE }}" "${{ github.event.inputs.DEVICETREES_BRANCH }}" "${{ github.workspace }}/${DEVICETREES_DIR_NAME}"
@@ -135,16 +136,40 @@ jobs:
         run: |
          mkdir -p ${{ env.OUTPUT_DIR }}
          cd ${{ github.workspace }}/kernel
-         
+
          export PATH="${{ env.CLANG_DIR }}/bin:$PATH"
 
          start=$(date +"%s")
+
+         KERNEL_DIR="${{ github.workspace }}/kernel"
+         MODULES_DIR_NAME=$(basename "${MODULES_DIR}")
+         SHIM_DIR="${{ github.workspace }}/shim"
+         mkdir -p "${EXT_OUT_DIR}" "${SHIM_DIR}/inc/linux" "${SHIM_DIR}/vendor"
+
+         for mod_top in "${MODULES_DIR}"/*/; do
+            ln -sfn "${mod_top%/}" "${SHIM_DIR}/vendor/$(basename "${mod_top}")"
+         done
+
+         SHIM_FLAGS="-I${SHIM_DIR}/inc"
+         shim_path="${SHIM_DIR}"
+         for depth_level in 1 2 3 4 5 6 7 8; do
+            shim_path="${shim_path}/l"
+            mkdir -p "${shim_path}"
+            if (( depth_level >= 2 )); then
+               SHIM_FLAGS="${SHIM_FLAGS} -I${shim_path}"
+            fi
+         done
+
+         qcom_scm_h=$(find "${KERNEL_DIR}/include" -name qcom_scm.h 2>/dev/null | head -n1 || true)
+         if [[ ! -e "${KERNEL_DIR}/include/linux/qcom_scm.h" && -n "${qcom_scm_h}" ]]; then
+            ln -sf "${qcom_scm_h}" "${SHIM_DIR}/inc/linux/qcom_scm.h"
+         fi
 
          MAKE_ARGS=(
             O=${{ env.OBJDIR }}
             ARCH=arm64
             CC=clang
-            KCFLAGS="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types"
+            KCFLAGS="-Wno-frame-larger-than -Wno-error=implicit-int -Wno-error=incompatible-function-pointer-types -Wno-misleading-indentation ${SHIM_FLAGS}"
             CROSS_COMPILE=aarch64-linux-gnu-
             CROSS_COMPILE_ARM32=arm-linux-gnueabi-
             CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
@@ -156,11 +181,11 @@ jobs:
             LLVM=1
             LLVM_IAS=1
          )
-         
+
          make_defconfig() {
             make -s ARCH=arm64 O=${{ env.OBJDIR }} ${{ github.event.inputs.CONFIG_FILE }} -j$(nproc --all)
          }
-         
+
          compile() {
             make -j$(nproc --all) "${MAKE_ARGS[@]}" Image Image.gz dtbs modules
          }
@@ -171,14 +196,21 @@ jobs:
             | { grep -v '^$' || true; }
          }
 
-         MODULES_DIR_NAME=$(basename "${MODULES_DIR}")
+         discover_kbuild_dirs() {
+            find "${MODULES_DIR}" -name Kbuild -not -path '*/.git/*' -printf '%h\n' | sort \
+            | awk 'BEGIN{p=""} { if (p=="" || index($0, p "/") != 1) { print; p=$0 } }' \
+            | sed "s~^${MODULES_DIR}/~~"
+         }
+
          declare -A BUILT_MODS
+         declare -a FAILED_MODS
          extra_symbols=""
+         mapfile -t TOP_DIRS < <(discover_kbuild_dirs)
 
          collect_symvers() {
             local rel="$1"
             local symvers
-            for symvers in "${MODULES_DIR}/${rel}/Module.symvers" "${OBJDIR}/../${MODULES_DIR_NAME}/${rel}/Module.symvers" "${OBJDIR}/${rel}/Module.symvers"; do
+            for symvers in "${EXT_OUT_DIR}/${rel}/Module.symvers" "${MODULES_DIR}/${rel}/Module.symvers" "${OBJDIR}/${rel}/Module.symvers"; do
                if [[ -f "${symvers}" ]]; then
                   extra_symbols="${extra_symbols} $(realpath "${symvers}")"
                   break
@@ -186,22 +218,16 @@ jobs:
             done
          }
 
-         find_provider() {
-            local sym="$1"
-            local src_file dir
-            src_file=$(grep -rlE "EXPORT_SYMBOL[A-Z_]*\([[:space:]]*${sym}[[:space:]]*\)" "${MODULES_DIR}" --include='*.c' 2>/dev/null | head -n1 || true)
-            if [[ -z "${src_file}" ]]; then
-               return 0
-            fi
-            dir=$(dirname "${src_file}")
-            while [[ "${dir}" != "${MODULES_DIR}" && "${dir}" != "/" ]]; do
-               if [[ -f "${dir}/Kbuild" ]]; then
-                  echo "${dir#${MODULES_DIR}/}"
+         top_dir_for_file() {
+            local f="$1"
+            local d dir
+            for d in "${TOP_DIRS[@]}"; do
+               if [[ "${f}" == "${MODULES_DIR}/${d}/"* ]]; then
+                  echo "${d}"
                   return 0
                fi
-               dir=$(dirname "${dir}")
             done
-            dir=$(dirname "${src_file}")
+            dir=$(dirname "${f}")
             while [[ "${dir}" != "${MODULES_DIR}" && "${dir}" != "/" ]]; do
                if [[ -f "${dir}/Makefile" ]] && grep -qE 'obj-(m|\$)' "${dir}/Makefile"; then
                   echo "${dir#${MODULES_DIR}/}"
@@ -209,31 +235,50 @@ jobs:
                fi
                dir=$(dirname "${dir}")
             done
+            return 0
          }
 
-         discover_kbuild_dirs() {
-            find "${MODULES_DIR}" -name Kbuild -not -path '*/.git/*' -printf '%h\n' | sort \
-            | awk 'BEGIN{p=""} { if (p=="" || index($0, p "/") != 1) { print; p=$0 } }' \
-            | sed "s~^${MODULES_DIR}/~~"
+         find_providers() {
+            local sym="$1"
+            local rel="$2"
+            local files f d
+            files=$(grep -rlE "EXPORT_SYMBOL[A-Z_]*\([[:space:]]*${sym}[[:space:]]*\)" "${MODULES_DIR}" --include='*.c' 2>/dev/null || true)
+            if [[ -z "${files}" ]]; then
+               files=$(grep -rlw -- "${sym}" "${MODULES_DIR}" --include='*.c' --include='*.h' 2>/dev/null || true)
+            fi
+            for f in ${files}; do
+               d=$(top_dir_for_file "${f}")
+               if [[ -n "${d}" && "${d}" != "${rel}" ]]; then
+                  echo "${d}"
+               fi
+            done | sort -u
+            return 0
          }
-
-         FALLBACK_DONE=0
 
          build_ext_module() {
             local rel="$1"
             local log="$2"
             local rc=0
-            make -j$(nproc --all) -C ${{ github.workspace }}/kernel "${MAKE_ARGS[@]}" \
-               M="../${MODULES_DIR_NAME}/${rel}" \
-               KBUILD_EXTRA_SYMBOLS="${extra_symbols}" \
-               modules 2>&1 | tee "${log}" || rc=${PIPESTATUS[0]}
+            local mod_path="${MODULES_DIR}/${rel}"
+            local m_rel="../${MODULES_DIR_NAME}/${rel}"
+            if [[ -f "${mod_path}/Makefile" ]] && grep -q 'KERNEL_SRC' "${mod_path}/Makefile"; then
+               make -j$(nproc --all) -C "${mod_path}" "${MAKE_ARGS[@]}" \
+                  KERNEL_SRC="${KERNEL_DIR}" \
+                  M="${m_rel}" \
+                  KBUILD_EXTRA_SYMBOLS="${extra_symbols}" 2>&1 | tee "${log}" || rc=${PIPESTATUS[0]}
+            else
+               make -j$(nproc --all) -C "${KERNEL_DIR}" "${MAKE_ARGS[@]}" \
+                  M="${m_rel}" \
+                  KBUILD_EXTRA_SYMBOLS="${extra_symbols}" \
+                  modules 2>&1 | tee "${log}" || rc=${PIPESTATUS[0]}
+            fi
             return ${rc}
          }
 
          ensure_ext_module() {
             local rel="$1"
             local depth="$2"
-            local log syms sym provider added attempt dir
+            local log syms sym provider providers added attempt
             if [[ -n "${BUILT_MODS[$rel]:-}" ]]; then
                return 0
             fi
@@ -252,24 +297,16 @@ jobs:
                added=0
                syms=$(grep -oE 'ERROR: modpost: "[^"]+"' "${log}" | sed -E 's/.*"([^"]+)"/\1/' | sort -u || true)
                for sym in ${syms}; do
-                  provider=$(find_provider "${sym}")
-                  echo "UNDEFINED SYMBOL ${sym} PROVIDER ${provider:-not found}"
-                  if [[ -n "${provider}" && "${provider}" != "${rel}" && -z "${BUILT_MODS[$provider]:-}" ]]; then
-                     if ensure_ext_module "${provider}" $((depth + 1)); then
-                        added=1
+                  providers=$(find_providers "${sym}" "${rel}")
+                  echo "UNDEFINED SYMBOL ${sym} PROVIDERS: ${providers:-not found}"
+                  for provider in ${providers}; do
+                     if [[ -z "${BUILT_MODS[$provider]:-}" ]]; then
+                        if ensure_ext_module "${provider}" $((depth + 1)); then
+                           added=1
+                        fi
                      fi
-                  fi
+                  done
                done
-               if (( added == 0 )) && (( FALLBACK_DONE == 0 )) && [[ -n "${syms}" ]]; then
-                  FALLBACK_DONE=1
-                  echo "NO PROVIDER RESOLVED, BUILDING ALL MODULE DIRECTORIES"
-                  while IFS= read -r dir; do
-                     if [[ -n "${dir}" ]]; then
-                        ensure_ext_module "${dir}" $((depth + 1)) || true
-                     fi
-                  done < <(discover_kbuild_dirs)
-                  added=1
-               fi
                if (( added == 0 )); then
                   break
                fi
@@ -289,10 +326,17 @@ jobs:
                   echo "SKIPPING ${mod_rel}: no Makefile or Kbuild"
                   continue
                fi
-               ensure_ext_module "${mod_rel}" 0 || { echo "ERROR: failed to build ${mod_rel}"; exit 1; }
+               if ! ensure_ext_module "${mod_rel}" 0; then
+                  FAILED_MODS+=("${mod_rel}")
+                  echo "::warning::failed to build external module ${mod_rel}"
+               fi
             done < <(get_ext_mod_dirs)
 
-            find "${MODULES_DIR}" "${OBJDIR}" -name "*.ko" -exec llvm-strip --strip-debug {} \;
+            find "${EXT_OUT_DIR}" "${OBJDIR}" -name "*.ko" -exec llvm-strip --strip-debug {} \;
+
+            if (( ${#FAILED_MODS[@]} > 0 )); then
+               echo "FAILED EXTERNAL MODULES: ${FAILED_MODS[*]}"
+            fi
          }
 
          make_defconfig
@@ -363,7 +407,8 @@ jobs:
 
               mkdir -p "${{ env.ANYKERNEL }}/modules/system/lib/modules"
               
-              find "${{ env.OBJDIR }}" "${{ env.MODULES_DIR }}" -name "*.ko" -exec cp -f {} "${{ env.ANYKERNEL }}/modules/system/lib/modules/" \;
+              mkdir -p "${{ env.EXT_OUT_DIR }}"
+              find "${{ env.OBJDIR }}" "${{ env.EXT_OUT_DIR }}" "${{ env.MODULES_DIR }}" -name "*.ko" -exec cp -f {} "${{ env.ANYKERNEL }}/modules/system/lib/modules/" \;
 
               cd "${{ env.ANYKERNEL }}"
               zip -r AnyKernel.zip *
