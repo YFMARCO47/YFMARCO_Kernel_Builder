@@ -123,6 +123,21 @@ jobs:
             rm -f arch/arm64/boot/dts/vendor
             ln -s "../../../../../${DEVICETREES_DIR_NAME}" arch/arm64/boot/dts/vendor
           fi
+
+          AUDIO_KBUILD="${{ github.workspace }}/${MODULES_DIR_NAME}/qcom/opensource/audio-kernel/asoc/Kbuild"
+          if [[ -f "${AUDIO_KBUILD}" ]] && ! grep -q "machine_defect_detector" "${AUDIO_KBUILD}" && [[ -f "$(dirname "${AUDIO_KBUILD}")/machine_defect_detector.c" ]]; then
+            sed -i 's~^\(\tMACHINE_OBJS += waipio\.o\)$~\1\n\tMACHINE_OBJS += machine_defect_detector.o~' "${AUDIO_KBUILD}"
+            echo "PATCHED ${AUDIO_KBUILD}: added machine_defect_detector.o"
+          fi
+
+          HF_HDR="$(find "${{ github.workspace }}/${MODULES_DIR_NAME}" -path "*mm-drivers/hw_fence/include/msm_hw_fence_synx_translation.h" 2>/dev/null | head -n1 || true)"
+          SYNX_HDR="$(find "${{ github.workspace }}/${MODULES_DIR_NAME}" -path "*synx-kernel/msm/synx/synx_api.h" 2>/dev/null | head -n1 || true)"
+          if [[ -n "${HF_HDR}" && -n "${SYNX_HDR}" ]]; then
+            if grep -q "enum synx_hwfence_client_id" "${HF_HDR}" && grep -q "SYNX_CLIENT_HW_FENCE_GFX_CTX0" "${SYNX_HDR}"; then
+              sed -i '/^enum synx_hwfence_client_id {/,/^};/d' "${HF_HDR}"
+              echo "PATCHED ${HF_HDR}: removed duplicate synx client enum"
+            fi
+          fi
           
       - name: Set-up Toolchain
         run: |
@@ -303,7 +318,7 @@ jobs:
                      filtered+=("${lnk}")
                      continue
                   fi
-                  echo "SKIPPING ${u}: WLAN_PROFILE not resolvable, provide WLAN_PROFILE matching one of configs/${soc}_gki_*_defconfig"
+                  echo "SKIPPING ${u}: ambiguous WLAN_PROFILE ${chips[*]}"
                   continue
                fi
                filtered+=("${u}")
@@ -317,7 +332,6 @@ jobs:
                failed=()
                for mod_path in "${pending[@]}"; do
                   echo "BUILDING EXTERNAL MODULE ${mod_path}"
-                  export KBUILD_EXTRA_SYMBOLS="${extra_symbols}"
                   if build_mod "${mod_path}" "${extra_symbols}"; then
                      if [[ -f "${mod_path}/Module.symvers" ]]; then
                         extra_symbols="${extra_symbols} ${mod_path}/Module.symvers"
@@ -366,6 +380,21 @@ jobs:
          build_mod() {
             mod_rel="$(realpath -s --relative-to=${{ github.workspace }}/kernel "$1")"
             if grep -q "KERNEL_SRC" "$1/Makefile" 2>/dev/null; then
+               fchain=""
+               for s in $2; do
+                  dup=0
+                  for r in $(grep -o '\$(M)/[^[:space:]]*Module\.symvers' "$1/Makefile" 2>/dev/null || true); do
+                     rel="$(echo "${r}" | sed 's~^\$(M)/~~')"
+                     if [[ "$(realpath -m "$1/${rel}")" == "$(realpath -m "${s}")" ]]; then
+                        dup=1
+                        break
+                     fi
+                  done
+                  if [[ "${dup}" == "0" ]]; then
+                     fchain="${fchain} ${s}"
+                  fi
+               done
+               export KBUILD_EXTRA_SYMBOLS="${fchain}"
                make -j$(nproc --all) -C "$1" "${WRAPPER_ARGS[@]}" KERNEL_SRC=${{ github.workspace }}/kernel M="${mod_rel}" KBUILD_OUTPUT=${{ env.OBJDIR }} all
             else
                make -j$(nproc --all) -C ${{ github.workspace }}/kernel "${MAKE_ARGS[@]}" \
