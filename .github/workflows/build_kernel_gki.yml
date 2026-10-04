@@ -136,6 +136,13 @@ jobs:
             echo "PATCHED ${DEFECT_C}: marked send_abc_event maybe_unused"
           fi
 
+          for t in "${{ github.workspace }}/${MODULES_DIR_NAME}"/*/opensource/touch-drivers/Kbuild; do
+            if [[ -f "${t}" ]] && grep -q "goodix_ts-y" "${t}" && ! grep -q "goodix_ts_berlin" "${t}"; then
+              sed -i 's~goodix_ts-y~goodix_ts_berlin-y~; s~+= goodix_ts\.o$~+= goodix_ts_berlin.o~' "${t}"
+              echo "PATCHED ${t}: renamed goodix_ts to goodix_ts_berlin"
+            fi
+          done
+
           HF_HDR=""
           SYNX_HDR=""
           for v in "${{ github.workspace }}/${MODULES_DIR_NAME}"/*/opensource; do
@@ -230,6 +237,7 @@ jobs:
          compile_ext_modules() {
             extra_symbols=""
             units=()
+            wlan_units=()
             WRAPPER_ARGS=()
             for a in "${MAKE_ARGS[@]}"; do
                if [[ "${a}" == O=* ]]; then
@@ -301,6 +309,33 @@ jobs:
                fi
             done < <(find "${{ env.MODULES_DIR }}" -mindepth 4 -maxdepth 6 -name Kbuild | sort -u)
 
+            while IFS= read -r kb7; do
+               sub7="$(dirname "${kb7}")"
+               if [[ ! -f "${sub7}/Makefile" ]]; then
+                  continue
+               fi
+               if grep -q "KERNEL_SRC" "${sub7}/Makefile" 2>/dev/null; then
+                  continue
+               fi
+               if [[ ! -f "${sub7}/Kconfig" ]]; then
+                  continue
+               fi
+               par7="$(dirname "${sub7}")"
+               if grep -q "$(basename "${sub7}")" "${par7}/Kbuild" "${par7}/Makefile" 2>/dev/null; then
+                  continue
+               fi
+               dup=0
+               for u in "${units[@]}"; do
+                  if [[ "${sub7}" == "${u}" ]]; then
+                     dup=1
+                     break
+                  fi
+               done
+               if [[ "${dup}" == "0" ]]; then
+                  units+=("${sub7}")
+               fi
+            done < <(find "${{ env.MODULES_DIR }}" -mindepth 7 -maxdepth 7 -name Kbuild | sort -u)
+
             filtered=()
             for u in "${units[@]}"; do
                base="$(basename "${u}")"
@@ -331,14 +366,16 @@ jobs:
                   for c in "${chips[@]}"; do
                      nchip=$((nchip + 1))
                   done
-                  if [[ "${nchip}" == "1" ]]; then
-                     lnk="$(dirname "${u}")/${chips}"
-                     ln -sfn "${u}" "${lnk}"
-                     echo "WLAN PROFILE ${chips} VIA ${lnk}"
-                     filtered+=("${lnk}")
+                  if [[ "${nchip}" == "0" ]]; then
+                     echo "SKIPPING ${u}: no WLAN chip profile found"
                      continue
                   fi
-                  echo "SKIPPING ${u}: ambiguous WLAN_PROFILE ${chips[*]}"
+                  for chip in "${chips[@]}"; do
+                     lnk="$(dirname "${u}")/${chip}"
+                     ln -sfn "${u}" "${lnk}"
+                     echo "WLAN PROFILE ${chip} VIA ${lnk}"
+                     wlan_units+=("${lnk}")
+                  done
                   continue
                fi
                filtered+=("${u}")
@@ -366,6 +403,18 @@ jobs:
                echo "FAILED EXTERNAL MODULES ${pending[*]}"
                return 1
             fi
+
+            for wmod in "${wlan_units[@]}"; do
+               echo "BUILDING WLAN PROFILE MODULE ${wmod}"
+               if build_mod "${wmod}" "${extra_symbols}"; then
+                  echo "BUILT WLAN PROFILE MODULE ${wmod}"
+                  if [[ -f "${wmod}/Module.symvers" ]]; then
+                     extra_symbols="${extra_symbols} ${wmod}/Module.symvers"
+                  fi
+               else
+                  echo "FAILED WLAN PROFILE MODULE ${wmod}"
+               fi
+            done
 
             find "${{ env.MODULES_DIR }}" "${{ env.OBJDIR }}" -name "*.ko" -exec llvm-strip --strip-debug {} \;
          }
@@ -399,6 +448,15 @@ jobs:
 
          build_mod() {
             mod_rel="$(realpath -s --relative-to=${{ github.workspace }}/kernel "$1")"
+            rootbase="$1"
+            d="$1"
+            while [[ "${d}" != "${{ env.MODULES_DIR }}" && "${d}" != "/" ]]; do
+               if [[ -d "${d}/config" ]]; then
+                  rootbase="${d}"
+                  break
+               fi
+               d="$(dirname "${d}")"
+            done
             if grep -q "KERNEL_SRC" "$1/Makefile" 2>/dev/null; then
                fchain=""
                for s in $2; do
@@ -415,27 +473,41 @@ jobs:
                   fi
                done
                export KBUILD_EXTRA_SYMBOLS="${fchain}"
-               make -j$(nproc --all) -C "$1" "${WRAPPER_ARGS[@]}" KERNEL_SRC=${{ github.workspace }}/kernel M="${mod_rel}" KBUILD_OUTPUT=${{ env.OBJDIR }} all
+               dextra=()
+               if [[ "$(basename "$1")" == "display-drivers" ]]; then
+                  dextra=(CONFIG_DRM_MSM=m)
+               fi
+               make -j$(nproc --all) -C "$1" "${WRAPPER_ARGS[@]}" "${dextra[@]}" KERNEL_SRC=${{ github.workspace }}/kernel M="${mod_rel}" KBUILD_OUTPUT=${{ env.OBJDIR }} all
             else
+               selects=""
+               if [[ -f "$1/Kbuild" ]]; then
+                  for c in $(grep -o 'obj-\$(CONFIG_[A-Za-z0-9_]*)' "$1/Kbuild" 2>/dev/null | sed -E 's~.*\(~~; s~\)~~' | sort -u || true); do
+                     if ! grep -q "^${c}=" "${{ env.OBJDIR }}/.config" && ! grep -q "${c} is not set" "${{ env.OBJDIR }}/.config"; then
+                        selects="${selects} ${c}=m"
+                     fi
+                  done
+               fi
                make -j$(nproc --all) -C ${{ github.workspace }}/kernel "${MAKE_ARGS[@]}" \
                   M="${mod_rel}" \
+                  MODNAME="$(basename "$1")" \
                   KBUILD_EXTRA_SYMBOLS="$2" \
-                  AUDIO_ROOT="$1" \
-                  TOUCH_ROOT="$1" \
-                  DISPLAY_ROOT="$1" \
-                  VIDEO_ROOT="$1" \
-                  SSG_MODULE_ROOT="$1" \
-                  CAMERA_KERNEL_ROOT="$1" \
-                  KERNEL_ROOT="$1" \
-                  WLAN_ROOT="$1" \
-                  SYNX_ROOT="$1" \
-                  MSM_HW_FENCE_ROOT="$1" \
-                  SYNC_FENCE_ROOT="$1" \
-                  SPU_ROOT="$1" \
-                  MMRM_ROOT="$1" \
-                  DSP_ROOT="$1" \
-                  MSM_EXT_DISPLAY_ROOT="$1" \
-                  BT_ROOT="$1" \
+                  AUDIO_ROOT="${rootbase}" \
+                  TOUCH_ROOT="${rootbase}" \
+                  DISPLAY_ROOT="${rootbase}" \
+                  VIDEO_ROOT="${rootbase}" \
+                  SSG_MODULE_ROOT="${rootbase}" \
+                  CAMERA_KERNEL_ROOT="${rootbase}" \
+                  KERNEL_ROOT="${rootbase}" \
+                  WLAN_ROOT="${rootbase}" \
+                  SYNX_ROOT="${rootbase}" \
+                  MSM_HW_FENCE_ROOT="${rootbase}" \
+                  SYNC_FENCE_ROOT="${rootbase}" \
+                  SPU_ROOT="${rootbase}" \
+                  MMRM_ROOT="${rootbase}" \
+                  DSP_ROOT="${rootbase}" \
+                  MSM_EXT_DISPLAY_ROOT="${rootbase}" \
+                  BT_ROOT="${rootbase}" \
+                  ${selects} \
                   modules
             fi
          }
