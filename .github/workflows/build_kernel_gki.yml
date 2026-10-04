@@ -130,13 +130,33 @@ jobs:
             echo "PATCHED ${AUDIO_KBUILD}: added machine_defect_detector.o"
           fi
 
-          HF_HDR="$(find "${{ github.workspace }}/${MODULES_DIR_NAME}" -path "*mm-drivers/hw_fence/include/msm_hw_fence_synx_translation.h" 2>/dev/null | head -n1 || true)"
-          SYNX_HDR="$(find "${{ github.workspace }}/${MODULES_DIR_NAME}" -path "*synx-kernel/msm/synx/synx_api.h" 2>/dev/null | head -n1 || true)"
+          DEFECT_C="$(dirname "${AUDIO_KBUILD}")/machine_defect_detector.c"
+          if [[ -f "${DEFECT_C}" ]] && grep -q "^static void send_abc_event(void)$" "${DEFECT_C}" && ! grep -q "__maybe_unused send_abc_event" "${DEFECT_C}"; then
+            sed -i 's~^static void send_abc_event(void)$~static void __maybe_unused send_abc_event(void)~' "${DEFECT_C}"
+            echo "PATCHED ${DEFECT_C}: marked send_abc_event maybe_unused"
+          fi
+
+          HF_HDR=""
+          SYNX_HDR=""
+          for v in "${{ github.workspace }}/${MODULES_DIR_NAME}"/*/opensource; do
+            if [[ -f "${v}/mm-drivers/hw_fence/include/msm_hw_fence_synx_translation.h" ]]; then
+              HF_HDR="${v}/mm-drivers/hw_fence/include/msm_hw_fence_synx_translation.h"
+            fi
+            if [[ -f "${v}/synx-kernel/msm/synx/synx_api.h" ]]; then
+              SYNX_HDR="${v}/synx-kernel/msm/synx/synx_api.h"
+            fi
+          done
+          echo "HF_HDR=${HF_HDR}"
+          echo "SYNX_HDR=${SYNX_HDR}"
           if [[ -n "${HF_HDR}" && -n "${SYNX_HDR}" ]]; then
             if grep -q "enum synx_hwfence_client_id" "${HF_HDR}" && grep -q "SYNX_CLIENT_HW_FENCE_GFX_CTX0" "${SYNX_HDR}"; then
               sed -i '/^enum synx_hwfence_client_id {/,/^};/d' "${HF_HDR}"
               echo "PATCHED ${HF_HDR}: removed duplicate synx client enum"
+            else
+              echo "HF patch skipped: duplicate enum pattern not found"
             fi
+          else
+            echo "HF patch skipped: headers not found"
           fi
           
       - name: Set-up Toolchain
