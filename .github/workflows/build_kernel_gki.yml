@@ -165,6 +165,18 @@ jobs:
           else
             echo "HF patch skipped: headers not found"
           fi
+          for socd in "${{ github.workspace }}/${MODULES_DIR_NAME}"/*; do
+            if [[ -d "${socd}/opensource/dataipa" && ! -e "${socd}/dataipa" ]]; then
+              ln -sfn opensource/dataipa "${socd}/dataipa"
+              echo "LINKED ${socd}/dataipa"
+            fi
+          done
+          for osrc in "${{ github.workspace }}/${MODULES_DIR_NAME}"/*/opensource; do
+            if [[ -d "${osrc}/wlan/platform" && ! -e "${osrc}/platform" ]]; then
+              ln -sfn wlan/platform "${osrc}/platform"
+              echo "LINKED ${osrc}/platform"
+            fi
+          done
           
       - name: Set-up Toolchain
         run: |
@@ -281,6 +293,9 @@ jobs:
                   units+=("${top}")
                fi
             done < <(for d in "${{ env.MODULES_DIR }}"/*/opensource/* "${{ env.MODULES_DIR }}"/*; do
+               if [[ -L "${d}" ]]; then
+                  continue
+               fi
                if [[ -d "${d}" ]]; then
                   if [[ -f "${d}/Makefile" && -f "${d}/Kbuild" ]]; then
                      echo "${d}"
