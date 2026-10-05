@@ -406,7 +406,7 @@ jobs:
                   echo "BUILDING EXTERNAL MODULE ${mod_path}"
                   if build_mod "${mod_path}" "${extra_symbols}"; then
                      if [[ -f "${mod_path}/Module.symvers" ]]; then
-                        extra_symbols="${extra_symbols} ${mod_path}/Module.symvers"
+                        extra_symbols="$(sanitize_symvers "${extra_symbols} ${mod_path}/Module.symvers")"
                      fi
                   else
                      failed+=("${mod_path}")
@@ -424,7 +424,7 @@ jobs:
                if build_mod "${wmod}" "${extra_symbols}"; then
                   echo "BUILT WLAN PROFILE MODULE ${wmod}"
                   if [[ -f "${wmod}/Module.symvers" ]]; then
-                     extra_symbols="${extra_symbols} ${wmod}/Module.symvers"
+                     extra_symbols="$(sanitize_symvers "${extra_symbols} ${wmod}/Module.symvers")"
                   fi
                else
                   echo "FAILED WLAN PROFILE MODULE ${wmod}"
@@ -461,6 +461,26 @@ jobs:
             return 1
          }
 
+         sanitize_symvers() {
+            # KBUILD_EXTRA_SYMBOLS entries become make *prerequisites*; a
+            # non-existent path is at best noise and a DUPLICATED prerequisite
+            # with no rule is a hard error:
+            #   "*** No rule to make target '...Module.symvers'. Stop."
+            # Vendor trees also ship buggy Makefiles that append the variable a
+            # second time as a bare positional argument (which make treats as a
+            # *target*). Keep only existing files, each exactly once.
+            local in="$1" out="" seen="" p
+            for p in ${in}; do
+               [[ -f "${p}" ]] || continue
+               if [[ "${seen}" != *" ${p} "* ]]; then
+                  seen="${seen} ${p} "
+                  out="${out} ${p}"
+               fi
+            done
+            echo "${out}" | xargs -r echo -n
+            return 0
+         }
+
          build_mod() {
             mod_rel="$(realpath -s --relative-to=${{ github.workspace }}/kernel "$1")"
             rootbase="$1"
@@ -487,7 +507,7 @@ jobs:
                      fchain="${fchain} ${s}"
                   fi
                done
-               export KBUILD_EXTRA_SYMBOLS="${fchain}"
+               export KBUILD_EXTRA_SYMBOLS="$(sanitize_symvers "${fchain}")"
                dextra=()
                if [[ "$(basename "$1")" == "display-drivers" ]]; then
                   dextra=(CONFIG_DRM_MSM=m)
@@ -505,7 +525,7 @@ jobs:
                make -j$(nproc --all) -C ${{ github.workspace }}/kernel "${MAKE_ARGS[@]}" \
                   M="${mod_rel}" \
                   MODNAME="$(basename "$1")" \
-                  KBUILD_EXTRA_SYMBOLS="$2" \
+                  KBUILD_EXTRA_SYMBOLS="$(sanitize_symvers "$2")" \
                   AUDIO_ROOT="${rootbase}" \
                   TOUCH_ROOT="${rootbase}" \
                   DISPLAY_ROOT="${rootbase}" \
