@@ -238,6 +238,18 @@ jobs:
             echo "KERNEL_SOURCE_URL=${KERNEL_SOURCE%.git}"
           } >> "$GITHUB_ENV"
 
+      - name: Fix missing Bazel BUILD packages
+        run: |
+          set -euo pipefail
+          echo "Scanning for directories with .bzl files missing a BUILD file..."
+          find "$WS" -type f -name "*.bzl" 2>/dev/null | while read -r bzl_file; do
+            dir=$(dirname "$bzl_file")
+            if [ ! -f "$dir/BUILD" ] && [ ! -f "$dir/BUILD.bazel" ]; then
+              echo "::info::Creating empty BUILD file in $dir"
+              touch "$dir/BUILD"
+            fi
+          done || true
+
       - name: Set-up Toolchain
         env:
           TOOLCHAIN_URL: ${{ github.event.inputs.TOOLCHAIN_URL }}
