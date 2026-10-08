@@ -156,7 +156,6 @@ jobs:
           </manifest>
           XML
 
-          # Wrap the project list in a minimal top-level manifest (adds remote/default if missing)
           MAN="$RUNNER_TEMP/manifest_repo"
           rm -rf "$MAN" && mkdir -p "$MAN"
           cp "$SRC_XML" "$MAN/kernel-platform.xml"
@@ -177,6 +176,9 @@ jobs:
           cd "$ROOT"
           repo init -u "file://$MAN" -b main -m default.xml --depth=1 --no-repo-verify -q
           repo sync -c -j6 --no-tags --no-clone-bundle --optimized-fetch --force-sync --retry-fetches=3 -q
+
+          # Clean system build tree from any invalid extra BUILD files
+          find "$WS/build/kernel/kleaf/impl" -mindepth 2 \( -name "BUILD" -o -name "BUILD.bazel" \) -delete || true
 
           [ -e "$WS/tools/bazel" ] || { echo "::error::tools/bazel missing"; ls -la "$WS"; exit 1; }
 
@@ -209,7 +211,6 @@ jobs:
 
           clone "$MODULES_SOURCE" "$MODULES_BRANCH" "$MDIR"
 
-          # Alias symlinks for the directory names referenced by the modules (../../../../NAME/qcom/opensource)
           NAMES=$(grep -rhoE '\.\./\.\./\.\./\.\./[A-Za-z0-9_.-]+/qcom/opensource' --include='*.h' --include='*.c' "$MDIR" 2>/dev/null \
                   | sed -E 's#^(\.\./){4}##; s#/qcom/opensource$##' | sort -u || true)
           for N in $NAMES; do
@@ -218,7 +219,6 @@ jobs:
             fi
           done
 
-          # Device trees: resolve the dts symlink inside the kernel and clone to its target
           DTS_LINK=$(find "$KDIR/arch/arm64/boot/dts" -maxdepth 1 -type l -print -quit 2>/dev/null || true)
           if [ -n "$DTS_LINK" ]; then
             DT_DIR=$(readlink -m "$DTS_LINK")
@@ -238,17 +238,19 @@ jobs:
             echo "KERNEL_SOURCE_URL=${KERNEL_SOURCE%.git}"
           } >> "$GITHUB_ENV"
 
-      - name: Fix missing Bazel BUILD packages
+      - name: Fix missing Bazel BUILD packages (Vendor only)
         run: |
           set -euo pipefail
-          echo "Scanning for directories with .bzl files missing a BUILD file..."
-          find "$WS" -type f -name "*.bzl" 2>/dev/null | while read -r bzl_file; do
-            dir=$(dirname "$bzl_file")
-            if [ ! -f "$dir/BUILD" ] && [ ! -f "$dir/BUILD.bazel" ]; then
-              echo "::info::Creating empty BUILD file in $dir"
-              touch "$dir/BUILD"
-            fi
-          done || true
+          echo "Scanning for missing BUILD files ONLY in vendor tree..."
+          if [ -d "$WS/vendor" ]; then
+            find "$WS/vendor" -type f -name "*.bzl" 2>/dev/null | while read -r bzl_file; do
+              dir=$(dirname "$bzl_file")
+              if [ ! -f "$dir/BUILD" ] && [ ! -f "$dir/BUILD.bazel" ]; then
+                echo "::info::Creating empty BUILD file in $dir"
+                touch "$dir/BUILD"
+              fi
+            done || true
+          fi
 
       - name: Set-up Toolchain
         env:
@@ -288,8 +290,6 @@ jobs:
           PKG="${BAZEL_TARGET#//}"; PKG="${PKG%%:*}"
           BUILD_FILE="$WS/$PKG/BUILD.bazel"; [ -f "$BUILD_FILE" ] || BUILD_FILE="$WS/$PKG/BUILD"
 
-          # CONFIG_FILE: first entry is the base defconfig (defined by the Bazel target),
-          # the remaining entries are merged into one extra defconfig fragment.
           FRAG="$WS/$PKG/ci_defconfig_fragment"
           : > "$FRAG"
           set -- $CONFIG_FILE
@@ -305,6 +305,9 @@ jobs:
           if ! grep -q 'ci_defconfig_fragment' "$BUILD_FILE"; then
             echo 'exports_files(["ci_defconfig_fragment"], visibility = ["//visibility:public"])' >> "$BUILD_FILE"
           fi
+
+          # Clean bazel server cache to flush bad subpackage state
+          tools/bazel clean --expunge || true
 
           # shellcheck disable=SC2086
           tools/bazel --output_user_root="$BAZEL_ROOT" run \
